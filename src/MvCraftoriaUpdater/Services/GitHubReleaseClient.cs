@@ -37,6 +37,44 @@ internal sealed partial class GitHubReleaseClient : IDisposable
             JsonDefaults.Options,
             cancellationToken) ?? throw new InvalidDataException("GitHub returned an empty release response.");
 
+        return await VerifyReleaseAsync(release, cancellationToken);
+    }
+
+    internal async Task<IReadOnlyList<VerifiedRelease>> GetVerifiedReleasesAsync(CancellationToken cancellationToken)
+    {
+        if (!RepositoryPattern().IsMatch(configuration.Repository))
+        {
+            throw new InvalidOperationException("The GitHub update repository has not been configured yet.");
+        }
+
+        var apiUri = new Uri($"https://api.github.com/repos/{configuration.Repository}/releases?per_page=100");
+        using var response = await httpClient.GetAsync(apiUri, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var releases = await JsonSerializer.DeserializeAsync<GitHubReleaseResponse[]>(
+            await response.Content.ReadAsStreamAsync(cancellationToken),
+            JsonDefaults.Options,
+            cancellationToken) ?? [];
+
+        var verified = new List<VerifiedRelease>();
+        foreach (var release in releases.Where(item => !item.Draft))
+        {
+            try
+            {
+                verified.Add(await VerifyReleaseAsync(release, cancellationToken));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                AppLog.Error($"Release {release.TagName} was skipped because it could not be verified", exception);
+            }
+        }
+        if (verified.Count == 0) throw new InvalidDataException("No verified MV Craftoria releases are available yet.");
+        return verified;
+    }
+
+    private async Task<VerifiedRelease> VerifyReleaseAsync(
+        GitHubReleaseResponse release,
+        CancellationToken cancellationToken)
+    {
         var manifestAsset = FindAsset(release, configuration.ManifestAsset);
         var signatureAsset = FindAsset(release, configuration.SignatureAsset);
         var manifestBytes = await httpClient.GetByteArrayAsync(new Uri(manifestAsset.BrowserDownloadUrl), cancellationToken);

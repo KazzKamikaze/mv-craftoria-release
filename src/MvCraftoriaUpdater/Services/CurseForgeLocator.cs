@@ -38,7 +38,10 @@ internal sealed class CurseForgeLocator
             using var document = JsonDocument.Parse(File.ReadAllText(instancePath));
             var root = document.RootElement;
             var name = ReadString(root, "name");
-            if (!string.Equals(name, expectedName, StringComparison.OrdinalIgnoreCase)) return null;
+            var stateProduct = ReadStateProduct(fullPath);
+            if (!string.Equals(name, expectedName, StringComparison.OrdinalIgnoreCase) &&
+                !name.StartsWith(expectedName + " ", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(stateProduct, expectedName, StringComparison.OrdinalIgnoreCase)) return null;
 
             return new CurseForgeProfile(
                 name,
@@ -125,6 +128,18 @@ internal sealed class CurseForgeLocator
         }
 
         return "Unknown";
+    }
+
+    private static string ReadStateProduct(string profilePath)
+    {
+        try
+        {
+            var statePath = Path.Combine(profilePath, ".mv-update", "state.json");
+            if (!File.Exists(statePath)) return "";
+            using var state = JsonDocument.Parse(File.ReadAllText(statePath));
+            return ReadString(state.RootElement, "product");
+        }
+        catch { return ""; }
     }
 
     private static string ReadString(JsonElement element, string propertyName) =>

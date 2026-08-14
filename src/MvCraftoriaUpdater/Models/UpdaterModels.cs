@@ -55,6 +55,10 @@ public sealed class GitHubReleaseResponse
     [JsonPropertyName("tag_name")]
     public string TagName { get; init; } = "";
 
+    public bool Draft { get; init; }
+
+    public bool Prerelease { get; init; }
+
     public GitHubAsset[] Assets { get; init; } = [];
 }
 
@@ -72,7 +76,10 @@ public sealed record VerifiedRelease(
     ReleaseManifest Manifest,
     Uri PackageUri,
     Uri ReleasePageUri,
-    string ManifestSha256);
+    string ManifestSha256)
+{
+    public string DisplayName => Manifest.Version;
+};
 
 public sealed record CurseForgeProfile(
     string Name,

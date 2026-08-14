@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using MvCraftoriaUpdater.Models;
 
 namespace MvCraftoriaUpdater.Services;
@@ -21,7 +22,8 @@ internal sealed class UpdateEngine
         VerifiedRelease release,
         GitHubReleaseClient releaseClient,
         IProgress<UpdateProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? installedProfileName = null)
     {
         if (MinecraftProcessGuard.IsMinecraftRunning())
         {
@@ -53,7 +55,14 @@ internal sealed class UpdateEngine
             }
 
             var patch = await StageAndVerifyPackageAsync(packagePath, stagedPayload, release, progress, cancellationToken);
-            var backupRoot = ApplyPatch(profile, patch, stagedPayload, release.Manifest.Version, progress, cancellationToken);
+            var backupRoot = ApplyPatch(
+                profile,
+                patch,
+                stagedPayload,
+                release.Manifest.Version,
+                installedProfileName ?? profile.Name,
+                progress,
+                cancellationToken);
             PruneBackups(profile.Path);
             progress?.Report(new UpdateProgress(100, "Update complete", $"Backup: {backupRoot}"));
             return backupRoot;
@@ -129,6 +138,7 @@ internal sealed class UpdateEngine
         PatchManifest patch,
         string stagedPayload,
         string targetVersion,
+        string installedProfileName,
         IProgress<UpdateProgress>? progress,
         CancellationToken cancellationToken)
     {
@@ -137,6 +147,8 @@ internal sealed class UpdateEngine
         var backupRoot = Path.Combine(updateRoot, "backups", $"{timestamp}-{targetVersion}");
         Directory.CreateDirectory(backupRoot);
         var touched = new List<TouchedFile>();
+        var freshInstall = string.Equals(profile.Version, "NOT_INSTALLED", StringComparison.OrdinalIgnoreCase);
+        var identity = freshInstall ? null : ReadProfileIdentity(profile.Path);
 
         try
         {
@@ -168,6 +180,8 @@ internal sealed class UpdateEngine
                 File.Delete(destination);
             }
 
+            RewriteProfileIdentity(profile.Path, installedProfileName, freshInstall, identity);
+
             var state = new InstalledState
             {
                 Product = configuration.ProductName,
@@ -189,6 +203,60 @@ internal sealed class UpdateEngine
             RollBack(touched);
             throw;
         }
+    }
+
+    private static ProfileIdentity? ReadProfileIdentity(string profilePath)
+    {
+        var path = Path.Combine(profilePath, "minecraftinstance.json");
+        if (!File.Exists(path)) return null;
+        var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject();
+        if (root is null) return null;
+        return new ProfileIdentity(
+            root["name"]?.GetValue<string>(),
+            root["guid"]?.GetValue<string>(),
+            root["installPath"]?.GetValue<string>(),
+            root["lastPlayed"]?.DeepClone(),
+            root["playedCount"]?.DeepClone(),
+            root["timePlayed"]?.DeepClone(),
+            root["installDate"]?.DeepClone(),
+            root["groupId"]?.DeepClone());
+    }
+
+    private static void RewriteProfileIdentity(
+        string profilePath,
+        string profileName,
+        bool freshInstall,
+        ProfileIdentity? identity)
+    {
+        var path = Path.Combine(profilePath, "minecraftinstance.json");
+        if (!File.Exists(path)) throw new InvalidDataException("The client package did not create minecraftinstance.json.");
+        var root = JsonNode.Parse(File.ReadAllText(path))?.AsObject()
+            ?? throw new InvalidDataException("The installed CurseForge profile metadata is invalid.");
+
+        root["name"] = profileName;
+        root["installPath"] = Path.GetFileName(profilePath);
+        root["wasNameManuallyChanged"] = true;
+        if (freshInstall)
+        {
+            root["guid"] = Guid.NewGuid().ToString();
+            root["playedCount"] = 0;
+            root["timePlayed"] = 0;
+            root["lastPlayed"] = null;
+            root["installDate"] = DateTimeOffset.UtcNow.ToString("O");
+            root["groupId"] = null;
+        }
+        else if (identity is not null)
+        {
+            root["name"] = identity.Name ?? profileName;
+            root["guid"] = identity.Guid;
+            root["installPath"] = identity.InstallPath ?? Path.GetFileName(profilePath);
+            root["lastPlayed"] = identity.LastPlayed?.DeepClone();
+            root["playedCount"] = identity.PlayedCount?.DeepClone();
+            root["timePlayed"] = identity.TimePlayed?.DeepClone();
+            root["installDate"] = identity.InstallDate?.DeepClone();
+            root["groupId"] = identity.GroupId?.DeepClone();
+        }
+        File.WriteAllText(path, root.ToJsonString(JsonDefaults.Options), new UTF8Encoding(false));
     }
 
     private static void Backup(string destination, string backupRoot, string relative, List<TouchedFile> touched)
@@ -283,4 +351,13 @@ internal sealed class UpdateEngine
     }
 
     private sealed record TouchedFile(string Destination, string Backup, bool Existed);
+    private sealed record ProfileIdentity(
+        string? Name,
+        string? Guid,
+        string? InstallPath,
+        JsonNode? LastPlayed,
+        JsonNode? PlayedCount,
+        JsonNode? TimePlayed,
+        JsonNode? InstallDate,
+        JsonNode? GroupId);
 }
