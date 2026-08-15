@@ -29,7 +29,7 @@ try
 {
     var config = new UpdaterConfiguration { ProductName = "MV Craftoria", Repository = "test/test" };
     var engine = new UpdateEngine(config);
-    var targetPath = Path.Combine(root, "Instances", "MV Craftoria 1.0.0 Test");
+    var targetPath = Path.Combine(root, "Instances", "MV Craftoria 1.0.0");
     var sentinelPath = Path.Combine(root, "Instances", "MV Craftoria", "sentinel.txt");
     Directory.CreateDirectory(Path.GetDirectoryName(sentinelPath)!);
     File.WriteAllText(sentinelPath, "untouched");
@@ -37,14 +37,14 @@ try
     var first = CreatePackage(root, "1.0.0", ["NOT_INSTALLED"]);
     using (var client = new GitHubReleaseClient(config, new PackageHandler(first.Bytes)))
     {
-        var target = new CurseForgeProfile("MV Craftoria 1.0.0 Test", targetPath, "NOT_INSTALLED", "1.21.1");
+        var target = new CurseForgeProfile("MV Craftoria 1.0.0", targetPath, "NOT_INSTALLED", "1.21.1");
         await engine.InstallAsync(target, first.Release, client, null, CancellationToken.None, target.Name);
     }
 
     var metadataPath = Path.Combine(targetPath, "minecraftinstance.json");
     var installed = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
-    Assert(installed["name"]!.GetValue<string>() == "MV Craftoria 1.0.0 Test", "fresh profile name");
-    Assert(installed["installPath"]!.GetValue<string>() == "MV Craftoria 1.0.0 Test", "fresh install path");
+    Assert(installed["name"]!.GetValue<string>() == "MV Craftoria 1.0.0", "fresh profile name");
+    Assert(installed["installPath"]!.GetValue<string>() == "MV Craftoria 1.0.0", "fresh install path");
     Assert(installed["guid"]!.GetValue<string>() != "template-guid", "fresh GUID");
     Assert(installed["playedCount"]!.GetValue<int>() == 0, "fresh played count");
     var preservedGuid = installed["guid"]!.GetValue<string>();
@@ -55,12 +55,12 @@ try
     var second = CreatePackage(root, "1.1.0", ["1.0.0"]);
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
     {
-        var target = new CurseForgeProfile("MV Craftoria 1.0.0 Test", targetPath, "1.0.0", "1.21.1");
+        var target = new CurseForgeProfile("MV Craftoria 1.0.0", targetPath, "1.0.0", "1.21.1");
         await engine.InstallAsync(target, second.Release, client, null, CancellationToken.None, target.Name);
     }
 
     var updated = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
-    Assert(updated["name"]!.GetValue<string>() == "MV Craftoria 1.0.0 Test", "updated profile name");
+    Assert(updated["name"]!.GetValue<string>() == "MV Craftoria 1.0.0", "updated profile name");
     Assert(updated["guid"]!.GetValue<string>() == preservedGuid, "updated GUID preservation");
     Assert(updated["playedCount"]!.GetValue<int>() == 42, "updated played count preservation");
     Assert(updated["timePlayed"]!.GetValue<int>() == 9876, "updated play time preservation");

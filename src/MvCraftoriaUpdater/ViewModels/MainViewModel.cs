@@ -253,9 +253,12 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     {
         var root = locator.FindPreferredInstanceRoot();
         if (root is null) return null;
-        var safeVersion = string.Concat(version.Select(character =>
+        var displayVersion = version.EndsWith("-final", StringComparison.OrdinalIgnoreCase)
+            ? version[..^"-final".Length]
+            : version;
+        var safeVersion = string.Concat(displayVersion.Select(character =>
             Path.GetInvalidFileNameChars().Contains(character) ? '-' : character));
-        var baseName = $"MV Craftoria {safeVersion} Test";
+        var baseName = $"MV Craftoria {safeVersion}";
         var name = baseName;
         var suffix = 2;
         while (Directory.Exists(Path.Combine(root, name))) name = $"{baseName} ({suffix++})";
