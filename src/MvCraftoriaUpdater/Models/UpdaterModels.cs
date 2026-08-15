@@ -21,6 +21,7 @@ public sealed class ReleaseManifest
     public string[] Changelog { get; init; } = [];
     public string[] SupportedFrom { get; init; } = [];
     public ReleasePackage Package { get; init; } = new();
+    public ReleasePackage? ImportPackage { get; init; }
 }
 
 public sealed class ReleasePackage
@@ -75,6 +76,7 @@ public sealed class GitHubAsset
 public sealed record VerifiedRelease(
     ReleaseManifest Manifest,
     Uri PackageUri,
+    Uri? ImportPackageUri,
     Uri ReleasePageUri,
     string ManifestSha256)
 {

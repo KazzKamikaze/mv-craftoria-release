@@ -19,6 +19,8 @@ if (args.Contains("--verify-live", StringComparer.OrdinalIgnoreCase))
     var release = releases.First(item => item.Manifest.Version == "1.0.0-final");
     Assert(release.Manifest.Package.AssetName == "MV-Craftoria-1.0.0.zip", "live package filename");
     Assert(release.Manifest.Package.Size == 1_063_189_726, "live package size");
+    Assert(release.Manifest.ImportPackage?.AssetName == "MV-Craftoria-1.0.0-CurseForge-Import.zip", "live import package filename");
+    Assert(release.ImportPackageUri is not null, "live import package URL");
     Console.WriteLine($"MV_UPDATER_LIVE_RELEASE_VERIFIED {release.DisplayName} {release.Manifest.Package.AssetName}");
     return;
 }
@@ -126,7 +128,12 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(string root, string
             Size = bytes.Length
         }
     };
-    return (bytes, new VerifiedRelease(manifest, new Uri("https://test.invalid/package.zip"), new Uri("https://test.invalid/release"), "test"));
+    return (bytes, new VerifiedRelease(
+        manifest,
+        new Uri("https://test.invalid/package.zip"),
+        null,
+        new Uri("https://test.invalid/release"),
+        "test"));
 }
 
 static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();

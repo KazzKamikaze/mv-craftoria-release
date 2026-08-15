@@ -27,7 +27,7 @@ internal sealed class UpdateEngine
     {
         if (MinecraftProcessGuard.IsMinecraftRunning())
         {
-            throw new InvalidOperationException("Close Minecraft before installing the update. CurseForge may remain open.");
+            throw new InvalidOperationException("Close Minecraft before installing the update.");
         }
         if (!release.Manifest.SupportedFrom.Contains(profile.Version, StringComparer.OrdinalIgnoreCase))
         {

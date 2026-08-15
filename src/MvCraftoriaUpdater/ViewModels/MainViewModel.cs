@@ -13,6 +13,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private readonly CurseForgeLocator locator = new();
     private readonly GitHubReleaseClient releaseClient;
     private readonly UpdateEngine updateEngine;
+    private readonly CurseForgeImportService importService;
     private CurseForgeProfile? selectedProfile;
     private VerifiedRelease? selectedRelease;
     private string currentVersion = "Not selected";
@@ -29,6 +30,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         this.configuration = configuration;
         releaseClient = new GitHubReleaseClient(configuration);
         updateEngine = new UpdateEngine(configuration);
+        importService = new CurseForgeImportService(configuration, locator);
         CheckCommand = new AsyncRelayCommand(CheckForUpdatesAsync, () => !IsBusy);
         UpdateCommand = new AsyncRelayCommand(UpdateSelectedClientAsync, CanUpdateSelected);
         InstallNewCommand = new AsyncRelayCommand(InstallAsNewClientAsync, CanInstallNew);
@@ -179,39 +181,95 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (SelectedProfile is null || SelectedRelease is null) return;
         var prompt = $"Update '{SelectedProfile.Name}' from {SelectedProfile.Version} to {SelectedRelease.Manifest.Version}?\n\n" +
-                     "Only the selected client will be modified. Personal settings and world data remain untouched.";
+                     "Only the selected client will be modified. Personal settings and world data remain untouched.\n\n" +
+                     "IMPORTANT: CurseForge will close before the update and remain unavailable while files are being installed. " +
+                     "It will reopen automatically when the update finishes.";
         if (ConfirmInstall?.Invoke(prompt) != true) return;
-        await InstallAsync(SelectedProfile, SelectedRelease, SelectedProfile.Name, false);
+        await InstallWithCurseForgeRestartAsync(
+            SelectedProfile,
+            SelectedRelease,
+            SelectedProfile.Name,
+            false);
     }
 
     private async Task InstallAsNewClientAsync()
     {
         if (SelectedRelease is null) return;
-        var target = CreateNewProfileTarget(SelectedRelease.Manifest.Version);
-        if (target is null)
+        var profileName = CreateNewProfileName(SelectedRelease.Manifest.Version);
+        if (profileName is null)
         {
             ShowMessage?.Invoke("CurseForge's Minecraft Instances directory could not be located.", "CurseForge not found");
             return;
         }
-        var prompt = $"Create a separate CurseForge client named '{target.Name}'?\n\n" +
-                     $"Version {SelectedRelease.Manifest.Version} will be installed into:\n{target.Path}\n\n" +
+        var prompt = $"Import a separate CurseForge client named '{profileName}'?\n\n" +
+                     $"Version {SelectedRelease.Manifest.Version} will be installed through CurseForge's official Import Profile workflow.\n\n" +
                      "Your currently selected client will not be changed.\n\n" +
-                     "CurseForge will close and reopen so it can register the new client.";
+                     "IMPORTANT: CurseForge will restart and remain busy while it downloads and registers the client. " +
+                     "The updater will select All Files only after verifying the signed package.";
         if (ConfirmInstall?.Invoke(prompt) != true) return;
+
+        IsBusy = true;
+        try
+        {
+            var reporter = new Progress<UpdateProgress>(value =>
+            {
+                Progress = value.Percentage;
+                StatusTitle = value.Stage;
+                StatusDetail = value.Detail;
+            });
+            var imported = await importService.ImportAsync(
+                SelectedRelease,
+                profileName,
+                releaseClient,
+                reporter,
+                CancellationToken.None);
+            ReloadProfiles(imported.Path);
+            Progress = 100;
+            StatusTitle = "New client installed";
+            StatusDetail = $"{imported.Name} is registered in CurseForge My Modpacks.";
+            ShowMessage?.Invoke(
+                $"'{imported.Name}' was imported successfully and now appears in CurseForge My Modpacks.",
+                "Client installed");
+        }
+        catch (Exception exception)
+        {
+            StatusTitle = "New client was not installed";
+            StatusDetail = FriendlyError(exception);
+            Progress = 0;
+            AppLog.Error("CurseForge profile import failed", exception);
+            ShowMessage?.Invoke(
+                StatusDetail + "\n\nCurseForge did not report a completed profile import. See the updater log for details.",
+                "Import failed");
+        }
+        finally
+        {
+            IsBusy = false;
+            RefreshCommandStates();
+        }
+    }
+
+    private async Task InstallWithCurseForgeRestartAsync(
+        CurseForgeProfile target,
+        VerifiedRelease release,
+        string installedName,
+        bool newClient)
+    {
         CurseForgeRestartSession? restartSession = null;
+        var installed = false;
+        var curseForgeReopened = false;
         IsBusy = true;
         try
         {
             StatusTitle = "Preparing CurseForge";
-            StatusDetail = "Closing CurseForge so the new client can be registered";
-            restartSession = await CurseForgeProcessService.PrepareProfileRegistrationAsync(CancellationToken.None);
-            await InstallAsync(target, SelectedRelease, target.Name, true);
+            StatusDetail = "CurseForge is closing and will be unavailable until the operation finishes";
+            restartSession = await CurseForgeProcessService.PrepareForMaintenanceAsync(CancellationToken.None);
+            installed = await InstallAsync(target, release, installedName, newClient);
         }
         catch (Exception exception)
         {
-            StatusTitle = "CurseForge registration could not start";
+            StatusTitle = "CurseForge could not be prepared";
             StatusDetail = FriendlyError(exception);
-            AppLog.Error("CurseForge profile registration failed", exception);
+            AppLog.Error("CurseForge maintenance preparation failed", exception);
             ShowMessage?.Invoke(StatusDetail, "CurseForge restart required");
         }
         finally
@@ -221,32 +279,49 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 try
                 {
                     CurseForgeProcessService.Launch(restartSession);
+                    curseForgeReopened = true;
                 }
                 catch (Exception exception)
                 {
                     AppLog.Error("CurseForge relaunch failed", exception);
-                    ShowMessage?.Invoke(
-                        "The client was installed, but CurseForge could not be reopened automatically. Open CurseForge manually to register it.",
-                        "Open CurseForge");
                 }
             }
             IsBusy = false;
             RefreshCommandStates();
         }
+
+        if (!installed) return;
+        if (curseForgeReopened)
+        {
+            StatusDetail = newClient
+                ? $"{installedName} is ready. CurseForge has reopened and will register the client."
+                : $"Installed {release.Manifest.Version}. CurseForge has reopened.";
+            ShowMessage?.Invoke(
+                newClient
+                    ? $"'{installedName}' was installed as a separate CurseForge client. CurseForge has reopened."
+                    : $"'{installedName}' was updated successfully. CurseForge has reopened.",
+                newClient ? "Client created" : "Update complete");
+        }
+        else
+        {
+            StatusDetail = "The files were installed, but CurseForge could not be reopened automatically.";
+            ShowMessage?.Invoke(
+                "The files were installed successfully, but CurseForge could not be reopened automatically. Open CurseForge manually to finish refreshing the client list.",
+                "Open CurseForge");
+        }
     }
 
-    private async Task InstallAsync(
+    private async Task<bool> InstallAsync(
         CurseForgeProfile target,
         VerifiedRelease release,
         string installedName,
         bool newClient)
     {
-        IsBusy = true;
         var progressReporter = new Progress<UpdateProgress>(value =>
         {
             Progress = value.Percentage;
             StatusTitle = value.Stage;
-            StatusDetail = value.Detail;
+            StatusDetail = $"CurseForge is temporarily unavailable. {value.Detail}";
         });
         try
         {
@@ -260,14 +335,10 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             ReloadProfiles(target.Path);
             StatusTitle = newClient ? "New client created" : "Selected client updated";
             StatusDetail = newClient
-                ? $"{installedName} is ready in CurseForge."
-                : $"Installed {release.Manifest.Version}. Recovery backup: {backup}";
+                ? $"{installedName} was installed. Reopening CurseForge."
+                : $"Installed {release.Manifest.Version}. Reopening CurseForge. Recovery backup: {backup}";
             Progress = 100;
-            ShowMessage?.Invoke(
-                newClient
-                    ? $"'{installedName}' was installed as a separate CurseForge client."
-                    : $"'{installedName}' was updated successfully.",
-                newClient ? "Client created" : "Update complete");
+            return true;
         }
         catch (Exception exception)
         {
@@ -276,15 +347,11 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             Progress = 0;
             AppLog.Error(newClient ? "New client installation failed" : "Client update failed", exception);
             ShowMessage?.Invoke(StatusDetail + "\n\nNo unverified files were applied. See the updater log for details.", "Installation failed");
-        }
-        finally
-        {
-            IsBusy = false;
-            RefreshCommandStates();
+            return false;
         }
     }
 
-    private CurseForgeProfile? CreateNewProfileTarget(string version)
+    private string? CreateNewProfileName(string version)
     {
         var root = locator.FindPreferredInstanceRoot();
         if (root is null) return null;
@@ -296,8 +363,12 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         var baseName = $"MV Craftoria {safeVersion}";
         var name = baseName;
         var suffix = 2;
-        while (Directory.Exists(Path.Combine(root, name))) name = $"{baseName} ({suffix++})";
-        return new CurseForgeProfile(name, Path.Combine(root, name), NotInstalledVersion, "1.21.1");
+        while (Directory.Exists(Path.Combine(root, name)) ||
+               Profiles.Any(profile => string.Equals(profile.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            name = $"{baseName} ({suffix++})";
+        }
+        return name;
     }
 
     private void EvaluateSelection()
@@ -339,6 +410,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
     private bool CanInstallNew() =>
         !IsBusy && SelectedRelease is not null &&
+        SelectedRelease.Manifest.ImportPackage is not null &&
+        SelectedRelease.ImportPackageUri is not null &&
         SelectedRelease.Manifest.SupportedFrom.Contains(NotInstalledVersion, StringComparer.OrdinalIgnoreCase) &&
         locator.FindPreferredInstanceRoot() is not null;
 

@@ -6,7 +6,7 @@ internal static class CurseForgeProcessService
 {
     private const string ProcessName = "CurseForge";
 
-    internal static async Task<CurseForgeRestartSession> PrepareProfileRegistrationAsync(
+    internal static async Task<CurseForgeRestartSession> PrepareForMaintenanceAsync(
         CancellationToken cancellationToken)
     {
         var processes = Process.GetProcessesByName(ProcessName);
@@ -20,12 +20,11 @@ internal static class CurseForgeProcessService
         var wasRunning = processes.Length > 0;
         if (wasRunning)
         {
-            var closeRequested = false;
             foreach (var process in processes)
             {
                 try
                 {
-                    if (process.MainWindowHandle != IntPtr.Zero && process.CloseMainWindow()) closeRequested = true;
+                    if (process.MainWindowHandle != IntPtr.Zero) process.CloseMainWindow();
                 }
                 catch
                 {
@@ -33,47 +32,92 @@ internal static class CurseForgeProcessService
                 }
             }
             Dispose(processes);
-            if (!closeRequested)
-            {
-                throw new InvalidOperationException(
-                    "CurseForge is running in the background. Exit it completely, then try again.");
-            }
 
-            var deadline = DateTime.UtcNow.AddSeconds(15);
-            while (DateTime.UtcNow < deadline)
+            var gracefulDeadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < gracefulDeadline)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var remaining = Process.GetProcessesByName(ProcessName);
-                var stopped = remaining.Length == 0;
-                Dispose(remaining);
+                var activeProcesses = Process.GetProcessesByName(ProcessName);
+                var stopped = activeProcesses.Length == 0;
+                Dispose(activeProcesses);
                 if (stopped) break;
                 await Task.Delay(250, cancellationToken);
             }
 
+            var remaining = Process.GetProcessesByName(ProcessName);
+            foreach (var process in remaining)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The process exited between enumeration and termination.
+                }
+            }
+            Dispose(remaining);
+
+            var forcedDeadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < forcedDeadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var active = Process.GetProcessesByName(ProcessName);
+                var stopped = active.Length == 0;
+                Dispose(active);
+                if (stopped) break;
+                await Task.Delay(250, cancellationToken);
+            }
             var stillRunning = Process.GetProcessesByName(ProcessName);
             var failedToClose = stillRunning.Length > 0;
             Dispose(stillRunning);
-            if (failedToClose)
-            {
-                throw new InvalidOperationException(
-                    "CurseForge did not close cleanly. Exit it completely, then try again.");
-            }
+            if (failedToClose) throw new InvalidOperationException("CurseForge could not be closed for maintenance.");
         }
         else
         {
             Dispose(processes);
         }
 
-        return new CurseForgeRestartSession(executablePath, wasRunning);
+        return new CurseForgeRestartSession(executablePath);
     }
 
-    internal static void Launch(CurseForgeRestartSession session)
+    internal static void Launch(CurseForgeRestartSession session, bool enableAccessibility = false)
     {
         Process.Start(new ProcessStartInfo(session.ExecutablePath)
         {
             UseShellExecute = true,
-            WorkingDirectory = Path.GetDirectoryName(session.ExecutablePath) ?? ""
+            WorkingDirectory = Path.GetDirectoryName(session.ExecutablePath) ?? "",
+            Arguments = enableAccessibility ? "--force-renderer-accessibility" : ""
         });
+    }
+
+    internal static async Task<Process> WaitForMainWindowAsync(CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(45);
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var processes = Process.GetProcessesByName(ProcessName);
+            foreach (var process in processes)
+            {
+                try
+                {
+                    process.Refresh();
+                    if (process.MainWindowHandle != IntPtr.Zero)
+                    {
+                        foreach (var other in processes.Where(item => item.Id != process.Id)) other.Dispose();
+                        return process;
+                    }
+                }
+                catch
+                {
+                    process.Dispose();
+                }
+            }
+            Dispose(processes);
+            await Task.Delay(250, cancellationToken);
+        }
+        throw new TimeoutException("CurseForge did not open its main window.");
     }
 
     private static string? FindExecutablePath(IEnumerable<Process> processes)
@@ -104,4 +148,4 @@ internal static class CurseForgeProcessService
     }
 }
 
-internal sealed record CurseForgeRestartSession(string ExecutablePath, bool WasRunning);
+internal sealed record CurseForgeRestartSession(string ExecutablePath);

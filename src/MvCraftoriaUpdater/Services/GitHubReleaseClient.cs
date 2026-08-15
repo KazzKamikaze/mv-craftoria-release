@@ -91,9 +91,21 @@ internal sealed partial class GitHubReleaseClient : IDisposable
             throw new InvalidDataException("The GitHub package size does not match the signed manifest.");
         }
 
+        Uri? importPackageUri = null;
+        if (manifest.ImportPackage is not null)
+        {
+            var importAsset = FindAsset(release, manifest.ImportPackage.AssetName);
+            if (manifest.ImportPackage.Size > 0 && importAsset.Size != manifest.ImportPackage.Size)
+            {
+                throw new InvalidDataException("The GitHub CurseForge import package size does not match the signed manifest.");
+            }
+            importPackageUri = new Uri(importAsset.BrowserDownloadUrl);
+        }
+
         return new VerifiedRelease(
             manifest,
             new Uri(packageAsset.BrowserDownloadUrl),
+            importPackageUri,
             new Uri(release.HtmlUrl),
             Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant());
     }
@@ -104,13 +116,43 @@ internal sealed partial class GitHubReleaseClient : IDisposable
         IProgress<UpdateProgress>? progress,
         CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync(
+        await DownloadAssetAsync(
             release.PackageUri,
+            release.Manifest.Package,
+            destination,
+            "Downloading update",
+            progress,
+            cancellationToken);
+    }
+
+    internal async Task DownloadImportPackageAsync(
+        VerifiedRelease release,
+        string destination,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var package = release.Manifest.ImportPackage
+            ?? throw new InvalidOperationException("This release does not provide a CurseForge import package.");
+        var uri = release.ImportPackageUri
+            ?? throw new InvalidOperationException("The CurseForge import package URL is unavailable.");
+        await DownloadAssetAsync(uri, package, destination, "Downloading client installer", progress, cancellationToken);
+    }
+
+    private async Task DownloadAssetAsync(
+        Uri uri,
+        ReleasePackage package,
+        string destination,
+        string stage,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.GetAsync(
+            uri,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        var expectedSize = release.Manifest.Package.Size;
+        var expectedSize = package.Size;
         var received = 0L;
         await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
         await using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 128, true);
@@ -121,7 +163,7 @@ internal sealed partial class GitHubReleaseClient : IDisposable
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             received += read;
             var percentage = expectedSize > 0 ? Math.Min(55, received * 55d / expectedSize) : 20;
-            progress?.Report(new UpdateProgress(percentage, "Downloading update", FormatBytes(received, expectedSize)));
+            progress?.Report(new UpdateProgress(percentage, stage, FormatBytes(received, expectedSize)));
         }
     }
 
@@ -145,6 +187,12 @@ internal sealed partial class GitHubReleaseClient : IDisposable
         if (!Sha256Pattern().IsMatch(manifest.Package.Sha256))
         {
             throw new InvalidDataException("The signed package checksum is invalid.");
+        }
+        if (manifest.ImportPackage is not null &&
+            (string.IsNullOrWhiteSpace(manifest.ImportPackage.AssetName) ||
+             !Sha256Pattern().IsMatch(manifest.ImportPackage.Sha256)))
+        {
+            throw new InvalidDataException("The signed CurseForge import package metadata is invalid.");
         }
         VersionPolicy.EnsureUpdaterVersionSupported(manifest.MinimumUpdaterVersion);
     }
