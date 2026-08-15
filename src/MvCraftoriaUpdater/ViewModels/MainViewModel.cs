@@ -282,7 +282,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         else if (VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version))
         {
             StatusTitle = "Selected client already has this version";
-            StatusDetail = "Choose another version or install this release as a separate testing client.";
+            StatusDetail = "Choose another version or install this release as a separate client.";
         }
         else if (SelectedRelease.Manifest.SupportedFrom.Contains(SelectedProfile.Version, StringComparer.OrdinalIgnoreCase))
         {
