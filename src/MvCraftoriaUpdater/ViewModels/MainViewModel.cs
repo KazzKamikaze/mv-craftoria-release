@@ -183,15 +183,17 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private async Task UpdateSelectedClientAsync()
     {
         if (SelectedProfile is null || SelectedRelease is null) return;
+        var updatedName = VersionPolicy.ProfileName(configuration.ProductName, SelectedRelease.Manifest.Version);
         var prompt = $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} will be updated from " +
-                     $"{VersionPolicy.Display(SelectedProfile.Version)} to {VersionPolicy.Display(SelectedRelease.Manifest.Version)}.\n\n" +
+                     $"{VersionPolicy.Display(SelectedProfile.Version)} to {VersionPolicy.Display(SelectedRelease.Manifest.Version)} " +
+                     $"and renamed to '{updatedName}'.\n\n" +
                      "Personal settings, worlds, screenshots, and map data will remain untouched. CurseForge must close " +
                      "during the update and will reopen automatically when it is finished.";
         if (ConfirmInstall?.Invoke("Confirm client update", prompt, "Update Client") != true) return;
         await InstallWithCurseForgeRestartAsync(
             SelectedProfile,
             SelectedRelease,
-            SelectedProfile.Name,
+            updatedName,
             false);
     }
 
@@ -386,7 +388,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         var displayVersion = VersionPolicy.Display(version);
         var safeVersion = string.Concat(displayVersion.Select(character =>
             Path.GetInvalidFileNameChars().Contains(character) ? '-' : character));
-        var baseName = $"MV Craftoria {safeVersion}";
+        var baseName = VersionPolicy.ProfileName(configuration.ProductName, safeVersion);
         var name = baseName;
         var suffix = 2;
         while (Directory.Exists(Path.Combine(root, name)) ||

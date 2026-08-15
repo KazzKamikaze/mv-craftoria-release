@@ -32,6 +32,7 @@ if (args.Contains("--verify-live", StringComparer.OrdinalIgnoreCase))
 
 Assert(VersionPolicy.Display("1.0.0-final") == "1.0.0", "legacy final suffix hidden");
 Assert(VersionPolicy.DisplayProfileName("MV Craftoria 1.0.0-final") == "MV Craftoria 1.0.0", "legacy profile suffix hidden");
+Assert(VersionPolicy.ProfileName("MV Craftoria", "1.1.0-final") == "MV Craftoria 1.1.0", "versioned profile name");
 Assert(VersionPolicy.IsSame("1.0.0", "1.0.0-final"), "legacy final version equivalence");
 
 var root = Path.Combine(Path.GetTempPath(), "mv-updater-test-" + Guid.NewGuid().ToString("N"));
@@ -96,11 +97,17 @@ try
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
     {
         var target = new CurseForgeProfile("MV Craftoria 1.0.0", targetPath, "1.0.0", "1.21.1");
-        await engine.InstallAsync(target, second.Release, client, null, CancellationToken.None, target.Name);
+        await engine.InstallAsync(
+            target,
+            second.Release,
+            client,
+            null,
+            CancellationToken.None,
+            VersionPolicy.ProfileName(config.ProductName, second.Release.Manifest.Version));
     }
 
     var updated = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
-    Assert(updated["name"]!.GetValue<string>() == "MV Craftoria 1.0.0", "updated profile name");
+    Assert(updated["name"]!.GetValue<string>() == "MV Craftoria 1.1.0", "updated profile name");
     Assert(updated["guid"]!.GetValue<string>() == preservedGuid, "updated GUID preservation");
     Assert(updated["playedCount"]!.GetValue<int>() == 42, "updated played count preservation");
     Assert(updated["timePlayed"]!.GetValue<int>() == 9876, "updated play time preservation");

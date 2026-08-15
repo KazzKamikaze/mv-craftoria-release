@@ -252,7 +252,7 @@ internal sealed class UpdateEngine
         }
         else if (identity is not null)
         {
-            root["name"] = identity.Name ?? profileName;
+            root["name"] = profileName;
             root["guid"] = identity.Guid;
             root["installPath"] = identity.InstallPath ?? Path.GetFileName(profilePath);
             root["lastPlayed"] = identity.LastPlayed?.DeepClone();

@@ -35,6 +35,9 @@ internal static class VersionPolicy
         return value.Replace(LegacyFinalSuffix, "", StringComparison.OrdinalIgnoreCase).Trim();
     }
 
+    internal static string ProfileName(string productName, string version) =>
+        $"{productName.Trim()} {Display(version)}";
+
     private static string NormalizeLegacyLabel(string value)
     {
         var normalized = value.Trim();

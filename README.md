@@ -13,7 +13,7 @@ Windows installer and updater for the private MV Craftoria CurseForge profile.
 - A release can update only the selected client or install as a separate client.
 - Separate clients receive unique CurseForge GUIDs, names, and folders.
 - Fresh installs are registered by CurseForge in the background; no import dialogs or file pickers are shown.
-- In-place updates preserve profile identity and play-time metadata.
+- In-place updates advance the displayed profile name to the installed version while preserving the profile GUID, path, group, and play-time metadata.
 - Failed or cancelled operations remove downloads, staging data, failed backups, and incomplete new profiles.
 - Abandoned updater work directories are cleaned on the next launch.
 - Player saves, controls, maps, screenshots, shader selection, logs, caches, and Distant Horizons data are not managed.
