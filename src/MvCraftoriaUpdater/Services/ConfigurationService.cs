@@ -8,10 +8,7 @@ internal static class ConfigurationService
     internal static UpdaterConfiguration Load()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "updater-config.json");
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException("The updater configuration is missing.", path);
-        }
+        if (!File.Exists(path)) return new UpdaterConfiguration();
 
         return JsonSerializer.Deserialize<UpdaterConfiguration>(
             File.ReadAllText(path),

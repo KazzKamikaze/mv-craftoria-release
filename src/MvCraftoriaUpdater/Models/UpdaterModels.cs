@@ -5,7 +5,7 @@ namespace MvCraftoriaUpdater.Models;
 public sealed class UpdaterConfiguration
 {
     public string ProductName { get; init; } = "MV Craftoria";
-    public string Repository { get; init; } = "";
+    public string Repository { get; init; } = "KazzKamikaze/mv-craftoria-release";
     public string ManifestAsset { get; init; } = "mv-release.json";
     public string SignatureAsset { get; init; } = "mv-release.sig";
 }

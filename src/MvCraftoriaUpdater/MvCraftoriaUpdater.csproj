@@ -24,9 +24,6 @@
   <ItemGroup>
     <Resource Include="Assets\mv-logo.png" />
     <Resource Include="Assets\mv.ico" />
-    <Content Include="updater-config.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
   </ItemGroup>
 
 </Project>
