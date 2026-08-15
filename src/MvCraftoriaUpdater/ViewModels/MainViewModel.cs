@@ -195,9 +195,44 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         }
         var prompt = $"Create a separate CurseForge client named '{target.Name}'?\n\n" +
                      $"Version {SelectedRelease.Manifest.Version} will be installed into:\n{target.Path}\n\n" +
-                     "Your currently selected client will not be changed.";
+                     "Your currently selected client will not be changed.\n\n" +
+                     "CurseForge will close and reopen so it can register the new client.";
         if (ConfirmInstall?.Invoke(prompt) != true) return;
-        await InstallAsync(target, SelectedRelease, target.Name, true);
+        CurseForgeRestartSession? restartSession = null;
+        IsBusy = true;
+        try
+        {
+            StatusTitle = "Preparing CurseForge";
+            StatusDetail = "Closing CurseForge so the new client can be registered";
+            restartSession = await CurseForgeProcessService.PrepareProfileRegistrationAsync(CancellationToken.None);
+            await InstallAsync(target, SelectedRelease, target.Name, true);
+        }
+        catch (Exception exception)
+        {
+            StatusTitle = "CurseForge registration could not start";
+            StatusDetail = FriendlyError(exception);
+            AppLog.Error("CurseForge profile registration failed", exception);
+            ShowMessage?.Invoke(StatusDetail, "CurseForge restart required");
+        }
+        finally
+        {
+            if (restartSession is not null)
+            {
+                try
+                {
+                    CurseForgeProcessService.Launch(restartSession);
+                }
+                catch (Exception exception)
+                {
+                    AppLog.Error("CurseForge relaunch failed", exception);
+                    ShowMessage?.Invoke(
+                        "The client was installed, but CurseForge could not be reopened automatically. Open CurseForge manually to register it.",
+                        "Open CurseForge");
+                }
+            }
+            IsBusy = false;
+            RefreshCommandStates();
+        }
     }
 
     private async Task InstallAsync(

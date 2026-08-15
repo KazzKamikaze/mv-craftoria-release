@@ -234,7 +234,7 @@ internal sealed class UpdateEngine
             ?? throw new InvalidDataException("The installed CurseForge profile metadata is invalid.");
 
         root["name"] = profileName;
-        root["installPath"] = Path.GetFileName(profilePath);
+        root["installPath"] = AbsoluteDirectoryPath(profilePath);
         root["wasNameManuallyChanged"] = true;
         if (freshInstall)
         {
@@ -258,6 +258,9 @@ internal sealed class UpdateEngine
         }
         File.WriteAllText(path, root.ToJsonString(JsonDefaults.Options), new UTF8Encoding(false));
     }
+
+    private static string AbsoluteDirectoryPath(string path) =>
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)) + Path.DirectorySeparatorChar;
 
     private static void Backup(string destination, string backupRoot, string relative, List<TouchedFile> touched)
     {

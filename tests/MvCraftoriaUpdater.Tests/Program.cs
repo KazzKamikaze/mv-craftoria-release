@@ -44,7 +44,9 @@ try
     var metadataPath = Path.Combine(targetPath, "minecraftinstance.json");
     var installed = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
     Assert(installed["name"]!.GetValue<string>() == "MV Craftoria 1.0.0", "fresh profile name");
-    Assert(installed["installPath"]!.GetValue<string>() == "MV Craftoria 1.0.0", "fresh install path");
+    Assert(
+        installed["installPath"]!.GetValue<string>() == Path.TrimEndingDirectorySeparator(Path.GetFullPath(targetPath)) + Path.DirectorySeparatorChar,
+        "fresh absolute install path");
     Assert(installed["guid"]!.GetValue<string>() != "template-guid", "fresh GUID");
     Assert(installed["playedCount"]!.GetValue<int>() == 0, "fresh played count");
     var preservedGuid = installed["guid"]!.GetValue<string>();
