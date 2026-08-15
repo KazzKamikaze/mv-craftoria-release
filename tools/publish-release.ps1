@@ -81,7 +81,7 @@ try {
             $encodedName = [Uri]::EscapeDataString($name)
             Write-Host "Uploading $name..." -ForegroundColor Cyan
             Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/octet-stream' `
-                -InFile $path -Uri "$uploadBase?name=$encodedName" | Out-Null
+                -InFile $path -Uri "${uploadBase}?name=$encodedName" | Out-Null
         }
     } catch {
         Invoke-RestMethod -Method Delete -Headers $headers `
