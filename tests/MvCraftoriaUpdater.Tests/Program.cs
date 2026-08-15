@@ -51,6 +51,33 @@ try
         "fresh absolute install path");
     Assert(installed["guid"]!.GetValue<string>() != "template-guid", "fresh GUID");
     Assert(installed["playedCount"]!.GetValue<int>() == 0, "fresh played count");
+    Assert(
+        DateTimeOffset.TryParse(installed["lastPlayed"]!.GetValue<string>(), out _),
+        "fresh CurseForge-compatible last played date");
+    using (var database = JsonDocument.Parse($$"""
+        [
+          {
+            "name": "MV Craftoria 1.0.0",
+            "installPath": {{JsonSerializer.Serialize(Path.TrimEndingDirectorySeparator(targetPath) + Path.DirectorySeparatorChar)}}
+          }
+        ]
+        """))
+    {
+        Assert(
+            CurseForgeLocator.ContainsRegisteredProfile(database.RootElement, targetPath, "MV Craftoria 1.0.0"),
+            "CurseForge agent registration detection");
+        Assert(
+            !CurseForgeLocator.ContainsRegisteredProfile(database.RootElement, targetPath, "MV Craftoria Wrong"),
+            "CurseForge registration name isolation");
+    }
+
+    var cleanupPath = Path.Combine(root, "partial-download");
+    Directory.CreateDirectory(cleanupPath);
+    var readOnlyDownload = Path.Combine(cleanupPath, "partial.zip");
+    File.WriteAllText(readOnlyDownload, "partial");
+    File.SetAttributes(readOnlyDownload, FileAttributes.ReadOnly);
+    Assert(WorkDirectoryCleaner.DeleteDirectory(cleanupPath, "test partial download"), "partial download cleanup");
+    Assert(!Directory.Exists(cleanupPath), "partial download directory removed");
     var preservedGuid = installed["guid"]!.GetValue<string>();
     installed["playedCount"] = 42;
     installed["timePlayed"] = 9876;

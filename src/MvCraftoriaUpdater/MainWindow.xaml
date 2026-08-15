@@ -131,12 +131,25 @@
                     <ColumnDefinition Width="Auto" /><ColumnDefinition Width="9" /><ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="9" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" /><ColumnDefinition Width="9" /><ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="9" /><ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Button Content="Check Again" Command="{Binding CheckCommand}" />
                 <Button Grid.Column="2" Content="Release Details" Command="{Binding OpenReleaseCommand}" />
                 <Button Grid.Column="4" Content="Open Logs" Command="{Binding OpenLogsCommand}" />
-                <Button Grid.Column="6" Content="Install as New Client" Command="{Binding InstallNewCommand}" MinWidth="154" />
-                <Button Grid.Column="8" Content="Update Selected Client" Command="{Binding UpdateCommand}"
+                <Button Grid.Column="6" Content="Cancel" Command="{Binding CancelCommand}" Foreground="{StaticResource DangerBrush}">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding CanCancel}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+                <Button Grid.Column="8" Content="Install as New Client" Command="{Binding InstallNewCommand}" MinWidth="154" />
+                <Button Grid.Column="10" Content="Update Selected Client" Command="{Binding UpdateCommand}"
                         Style="{StaticResource PrimaryButton}" MinWidth="164" />
             </Grid>
         </Border>

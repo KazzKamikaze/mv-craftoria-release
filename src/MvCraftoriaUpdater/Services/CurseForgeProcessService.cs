@@ -81,43 +81,18 @@ internal static class CurseForgeProcessService
         return new CurseForgeRestartSession(executablePath);
     }
 
-    internal static void Launch(CurseForgeRestartSession session, bool enableAccessibility = false)
+    internal static void Launch(
+        CurseForgeRestartSession session,
+        bool startMinimized = false)
     {
+        var arguments = new List<string>();
+        if (startMinimized) arguments.Add("--minimized");
         Process.Start(new ProcessStartInfo(session.ExecutablePath)
         {
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(session.ExecutablePath) ?? "",
-            Arguments = enableAccessibility ? "--force-renderer-accessibility" : ""
+            Arguments = string.Join(' ', arguments)
         });
-    }
-
-    internal static async Task<Process> WaitForMainWindowAsync(CancellationToken cancellationToken)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(45);
-        while (DateTime.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var processes = Process.GetProcessesByName(ProcessName);
-            foreach (var process in processes)
-            {
-                try
-                {
-                    process.Refresh();
-                    if (process.MainWindowHandle != IntPtr.Zero)
-                    {
-                        foreach (var other in processes.Where(item => item.Id != process.Id)) other.Dispose();
-                        return process;
-                    }
-                }
-                catch
-                {
-                    process.Dispose();
-                }
-            }
-            Dispose(processes);
-            await Task.Delay(250, cancellationToken);
-        }
-        throw new TimeoutException("CurseForge did not open its main window.");
     }
 
     private static string? FindExecutablePath(IEnumerable<Process> processes)

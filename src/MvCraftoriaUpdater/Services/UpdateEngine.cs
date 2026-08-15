@@ -35,11 +35,8 @@ internal sealed class UpdateEngine
                 $"Version {profile.Version} cannot update directly to {release.Manifest.Version}. A repair package is required.");
         }
 
-        var appData = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "MV Craftoria Updater");
         var session = $"{DateTime.UtcNow:yyyyMMdd_HHmmss}-{Guid.NewGuid():N}";
-        var workingRoot = Path.Combine(appData, "work", session);
+        var workingRoot = Path.Combine(WorkDirectoryCleaner.WorkRoot, session);
         var packagePath = Path.Combine(workingRoot, release.Manifest.Package.AssetName);
         var stagedPayload = Path.Combine(workingRoot, "payload");
         Directory.CreateDirectory(workingRoot);
@@ -69,7 +66,7 @@ internal sealed class UpdateEngine
         }
         finally
         {
-            TryDeleteDirectory(workingRoot);
+            WorkDirectoryCleaner.DeleteDirectory(workingRoot, "update download");
         }
     }
 
@@ -162,8 +159,15 @@ internal sealed class UpdateEngine
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 
                 var temporary = destination + ".mv-update-new";
-                File.Copy(source, temporary, true);
-                File.Move(temporary, destination, true);
+                try
+                {
+                    File.Copy(source, temporary, true);
+                    File.Move(temporary, destination, true);
+                }
+                finally
+                {
+                    TryDeleteTemporaryFile(temporary);
+                }
                 progress?.Report(new UpdateProgress(
                     76 + (index + 1) * 20d / Math.Max(1, patch.Files.Length + patch.Delete.Length),
                     "Installing files",
@@ -201,6 +205,7 @@ internal sealed class UpdateEngine
         catch
         {
             RollBack(touched);
+            WorkDirectoryCleaner.DeleteDirectory(backupRoot, "failed update backup");
             throw;
         }
     }
@@ -241,7 +246,7 @@ internal sealed class UpdateEngine
             root["guid"] = Guid.NewGuid().ToString();
             root["playedCount"] = 0;
             root["timePlayed"] = 0;
-            root["lastPlayed"] = null;
+            root["lastPlayed"] = DateTimeOffset.UtcNow.ToString("O");
             root["installDate"] = DateTimeOffset.UtcNow.ToString("O");
             root["groupId"] = null;
         }
@@ -297,6 +302,18 @@ internal sealed class UpdateEngine
         }
     }
 
+    private static void TryDeleteTemporaryFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception exception)
+        {
+            AppLog.Error($"Could not remove temporary update file: {path}", exception);
+        }
+    }
+
     private static void PruneBackups(string profilePath)
     {
         var root = Path.Combine(profilePath, ".mv-update", "backups");
@@ -305,7 +322,7 @@ internal sealed class UpdateEngine
                      .OrderByDescending(item => item.CreationTimeUtc)
                      .Skip(BackupLimit))
         {
-            TryDeleteDirectory(directory.FullName);
+            WorkDirectoryCleaner.DeleteDirectory(directory.FullName, "expired update backup");
         }
     }
 
@@ -339,18 +356,6 @@ internal sealed class UpdateEngine
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 128, true);
         var hash = await SHA256.HashDataAsync(stream, cancellationToken);
         return Convert.ToHexString(hash).ToLowerInvariant();
-    }
-
-    private static void TryDeleteDirectory(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path)) Directory.Delete(path, true);
-        }
-        catch (Exception exception)
-        {
-            AppLog.Error($"Could not remove temporary directory: {path}", exception);
-        }
     }
 
     private sealed record TouchedFile(string Destination, string Backup, bool Existed);

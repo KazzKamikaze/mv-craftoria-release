@@ -56,6 +56,64 @@ internal sealed class CurseForgeLocator
         }
     }
 
+    internal async Task<CurseForgeProfile> WaitForRegisteredProfileAsync(
+        string profilePath,
+        string expectedName,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var normalizedPath = NormalizeDirectory(profilePath);
+        var databasePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "CurseForge",
+            "agent",
+            "GameInstances",
+            "MinecraftGameInstance.json");
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (File.Exists(databasePath))
+                {
+                    using var document = JsonDocument.Parse(File.ReadAllText(databasePath));
+                    if (ContainsRegisteredProfile(document.RootElement, normalizedPath, expectedName))
+                    {
+                        return TryReadProfile(profilePath, expectedName)
+                            ?? throw new InvalidDataException("CurseForge registered the client, but its profile metadata is invalid.");
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is IOException or JsonException)
+            {
+                // CurseForge rewrites this database atomically; retry while it is between states.
+            }
+
+            await Task.Delay(500, cancellationToken);
+        }
+
+        throw new TimeoutException("CurseForge did not register the new client in My Modpacks.");
+    }
+
+    internal static bool ContainsRegisteredProfile(JsonElement databaseRoot, string profilePath, string expectedName)
+    {
+        if (databaseRoot.ValueKind != JsonValueKind.Array) return false;
+        var normalizedPath = NormalizeDirectory(profilePath);
+        foreach (var instance in databaseRoot.EnumerateArray())
+        {
+            var installPath = NormalizeDirectory(ReadString(instance, "installPath"));
+            var name = ReadString(instance, "name");
+            if (string.Equals(installPath, normalizedPath, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(name, expectedName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     internal static IReadOnlyList<string> FindInstanceRoots()
     {
         var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -146,4 +204,9 @@ internal sealed class CurseForgeLocator
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() ?? ""
             : "";
+
+    private static string NormalizeDirectory(string path) =>
+        string.IsNullOrWhiteSpace(path)
+            ? ""
+            : Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 }
