@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using MvCraftoriaUpdater.Services;
 
 namespace MvCraftoriaUpdater.Models;
 
@@ -80,7 +81,7 @@ public sealed record VerifiedRelease(
     Uri ReleasePageUri,
     string ManifestSha256)
 {
-    public string DisplayName => Manifest.Version;
+    public string DisplayName => VersionPolicy.Display(Manifest.Version);
 };
 
 public sealed record CurseForgeProfile(
@@ -89,7 +90,7 @@ public sealed record CurseForgeProfile(
     string Version,
     string GameVersion)
 {
-    public string DisplayName => $"{Name}  •  {Version}";
+    public string DisplayName => $"{VersionPolicy.DisplayProfileName(Name)}  •  {VersionPolicy.Display(Version)}";
 }
 
 public sealed record UpdateProgress(double Percentage, string Stage, string Detail);

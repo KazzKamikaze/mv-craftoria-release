@@ -15,11 +15,10 @@ public partial class MainWindow : Window
         var configuration = ConfigurationService.Load();
         viewModel = new MainViewModel(configuration)
         {
-            ConfirmInstall = message => MessageBox.Show(
-                this, message, "Install MV Craftoria update", MessageBoxButton.YesNo,
-                MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes,
-            ShowMessage = (message, title) => MessageBox.Show(
-                this, message, title, MessageBoxButton.OK, MessageBoxImage.Information)
+            ConfirmInstall = (title, message, primaryText) =>
+                UpdaterDialog.Confirm(this, title, message, primaryText),
+            ShowMessage = (message, title) =>
+                UpdaterDialog.ShowInformation(this, title, message)
         };
         viewModel.BrowseRequested += BrowseForProfile;
         DataContext = viewModel;

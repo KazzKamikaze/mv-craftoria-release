@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)] [string] $SourceDirectory,
     [Parameter(Mandatory)] [string] $OutputDirectory,
     [string] $PackageFileName,
-    [string[]] $SupportedFrom = @('NOT_INSTALLED', '1.0.0-final'),
+    [string[]] $SupportedFrom = @('NOT_INSTALLED', '1.0.0', '1.0.0-final'),
     [string] $Summary = 'A new MV Craftoria client release is available.',
     [string[]] $Changelog = @('Client files updated.'),
     [string[]] $Delete = @(),
@@ -12,6 +12,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Version.EndsWith('-final', [StringComparison]::OrdinalIgnoreCase)) {
+    $Version = $Version.Substring(0, $Version.Length - '-final'.Length)
+}
 $source = [IO.Path]::GetFullPath($SourceDirectory)
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $privateKey = [IO.Path]::GetFullPath($PrivateKeyPath)
@@ -88,9 +91,7 @@ try {
         Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
     }
 
-    $displayVersion = if ($Version.EndsWith('-final', [StringComparison]::OrdinalIgnoreCase)) {
-        $Version.Substring(0, $Version.Length - '-final'.Length)
-    } else { $Version }
+    $displayVersion = $Version
     $curseManifest = $instance.manifest | ConvertTo-Json -Depth 12 | ConvertFrom-Json
     $curseManifest.name = "MV Craftoria $displayVersion"
     $curseManifest.version = $Version

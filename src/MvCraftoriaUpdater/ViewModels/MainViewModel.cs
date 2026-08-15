@@ -40,7 +40,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     internal event EventHandler? BrowseRequested;
-    internal Func<string, bool>? ConfirmInstall { get; set; }
+    internal Func<string, string, string, bool>? ConfirmInstall { get; set; }
     internal Action<string, string>? ShowMessage { get; set; }
 
     public ObservableCollection<CurseForgeProfile> Profiles { get; } = [];
@@ -60,7 +60,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (!SetProperty(ref selectedProfile, value)) return;
-            CurrentVersion = value?.Version ?? "Not selected";
+            CurrentVersion = value is null ? "Not selected" : VersionPolicy.Display(value.Version);
             ProfileStatus = value is null ? "NO CLIENT SELECTED" : "SELECTED CURSEFORGE CLIENT";
             OnPropertyChanged(nameof(ProfilePath));
             EvaluateSelection();
@@ -73,7 +73,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (!SetProperty(ref selectedRelease, value)) return;
-            SelectedVersion = value?.Manifest.Version ?? "Not selected";
+            SelectedVersion = value is null ? "Not selected" : VersionPolicy.Display(value.Manifest.Version);
             Changelog.Clear();
             if (value is not null)
             {
@@ -183,11 +183,11 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private async Task UpdateSelectedClientAsync()
     {
         if (SelectedProfile is null || SelectedRelease is null) return;
-        var prompt = $"Update '{SelectedProfile.Name}' from {SelectedProfile.Version} to {SelectedRelease.Manifest.Version}?\n\n" +
-                     "Only the selected client will be modified. Personal settings and world data remain untouched.\n\n" +
-                     "IMPORTANT: CurseForge will close before the update and remain unavailable while files are being installed. " +
-                     "It will reopen automatically when the update finishes.";
-        if (ConfirmInstall?.Invoke(prompt) != true) return;
+        var prompt = $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} will be updated from " +
+                     $"{VersionPolicy.Display(SelectedProfile.Version)} to {VersionPolicy.Display(SelectedRelease.Manifest.Version)}.\n\n" +
+                     "Personal settings, worlds, screenshots, and map data will remain untouched. CurseForge must close " +
+                     "during the update and will reopen automatically when it is finished.";
+        if (ConfirmInstall?.Invoke("Confirm client update", prompt, "Update Client") != true) return;
         await InstallWithCurseForgeRestartAsync(
             SelectedProfile,
             SelectedRelease,
@@ -210,6 +210,11 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             Path.Combine(instanceRoot, profileName),
             NotInstalledVersion,
             "1.21.1");
+        var prompt = $"A new CurseForge client named '{profileName}' will be installed with version " +
+                     $"{VersionPolicy.Display(SelectedRelease.Manifest.Version)}.\n\n" +
+                     "Your existing clients will not be changed. CurseForge must close during installation and will " +
+                     "reopen automatically when the new client is ready.";
+        if (ConfirmInstall?.Invoke("Confirm new client installation", prompt, "Install Client") != true) return;
         await InstallWithCurseForgeRestartAsync(target, SelectedRelease, profileName, true);
     }
 
@@ -259,13 +264,18 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 Progress = 100;
                 StatusTitle = "MV Craftoria is ready";
                 StatusDetail = $"{registered.Name} is available in CurseForge My Modpacks.";
+                ShowMessage?.Invoke(
+                    $"{VersionPolicy.DisplayProfileName(registered.Name)} was installed successfully.\n\n" +
+                    "CurseForge has reopened and the new client is ready in My Modpacks.",
+                    "Installation complete");
             }
             else
             {
                 StatusTitle = "Update complete";
-                StatusDetail = $"Installed {release.Manifest.Version}. CurseForge has reopened.";
+                StatusDetail = $"Installed {VersionPolicy.Display(release.Manifest.Version)}. CurseForge has reopened.";
                 ShowMessage?.Invoke(
-                    $"'{installedName}' was updated successfully. CurseForge has reopened.",
+                    $"{VersionPolicy.DisplayProfileName(installedName)} was updated successfully to " +
+                    $"{VersionPolicy.Display(release.Manifest.Version)}.\n\nCurseForge has reopened and the client is ready to play.",
                     "Update complete");
             }
         }
@@ -350,7 +360,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             StatusTitle = newClient ? "New client created" : "Selected client updated";
             StatusDetail = newClient
                 ? $"{installedName} was installed. Reopening CurseForge."
-                : $"Installed {release.Manifest.Version}. Reopening CurseForge. Recovery backup: {backup}";
+                : $"Installed {VersionPolicy.Display(release.Manifest.Version)}. Reopening CurseForge. Recovery backup: {backup}";
             Progress = 100;
             return true;
         }
@@ -373,9 +383,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     {
         var root = locator.FindPreferredInstanceRoot();
         if (root is null) return null;
-        var displayVersion = version.EndsWith("-final", StringComparison.OrdinalIgnoreCase)
-            ? version[..^"-final".Length]
-            : version;
+        var displayVersion = VersionPolicy.Display(version);
         var safeVersion = string.Concat(displayVersion.Select(character =>
             Path.GetInvalidFileNameChars().Contains(character) ? '-' : character));
         var baseName = $"MV Craftoria {safeVersion}";
@@ -400,7 +408,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         }
         if (SelectedProfile is null)
         {
-            StatusTitle = $"Version {SelectedRelease.Manifest.Version} is ready";
+            StatusTitle = $"Version {VersionPolicy.Display(SelectedRelease.Manifest.Version)} is ready";
             StatusDetail = "Install it as a new CurseForge client.";
         }
         else if (VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version))
@@ -410,13 +418,14 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         }
         else if (SelectedRelease.Manifest.SupportedFrom.Contains(SelectedProfile.Version, StringComparer.OrdinalIgnoreCase))
         {
-            StatusTitle = $"{SelectedProfile.Name} can install {SelectedRelease.Manifest.Version}";
+            StatusTitle = $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} can install {VersionPolicy.Display(SelectedRelease.Manifest.Version)}";
             StatusDetail = SelectedRelease.Manifest.Summary;
         }
         else
         {
             StatusTitle = "Direct update is not supported";
-            StatusDetail = $"{SelectedProfile.Version} cannot update directly to {SelectedRelease.Manifest.Version}. Install it as a new client instead.";
+            StatusDetail = $"{VersionPolicy.Display(SelectedProfile.Version)} cannot update directly to " +
+                           $"{VersionPolicy.Display(SelectedRelease.Manifest.Version)}. Install it as a new client instead.";
         }
         RefreshCommandStates();
     }

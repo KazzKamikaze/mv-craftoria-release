@@ -23,7 +23,12 @@ Windows installer and updater for the private MV Craftoria CurseForge profile.
 Every GitHub release must contain:
 
 - `MV-Craftoria-VERSION.zip`
+- `MV-Craftoria-VERSION-CurseForge-Import.zip`
 - `mv-release.json`
 - `mv-release.sig`
+- `MV-Craftoria-Updater.exe`
 
 Build them with `tools/build-release.ps1`. The private signing key must never be committed or uploaded.
+
+Publish a prepared version directory with `tools/publish-release.ps1`. It uses the existing Git Credential
+Manager session and never writes the GitHub credential to disk or command output.

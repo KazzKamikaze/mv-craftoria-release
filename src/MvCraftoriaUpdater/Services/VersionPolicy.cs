@@ -4,6 +4,8 @@ namespace MvCraftoriaUpdater.Services;
 
 internal static class VersionPolicy
 {
+    private const string LegacyFinalSuffix = "-final";
+
     internal static void EnsureUpdaterVersionSupported(string minimumVersion)
     {
         var runningText = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
@@ -19,7 +21,27 @@ internal static class VersionPolicy
     }
 
     internal static bool IsSame(string left, string right) =>
-        string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+        string.Equals(NormalizeLegacyLabel(left), NormalizeLegacyLabel(right), StringComparison.OrdinalIgnoreCase);
+
+    internal static string Display(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        return NormalizeLegacyLabel(value);
+    }
+
+    internal static string DisplayProfileName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        return value.Replace(LegacyFinalSuffix, "", StringComparison.OrdinalIgnoreCase).Trim();
+    }
+
+    private static string NormalizeLegacyLabel(string value)
+    {
+        var normalized = value.Trim();
+        return normalized.EndsWith(LegacyFinalSuffix, StringComparison.OrdinalIgnoreCase)
+            ? normalized[..^LegacyFinalSuffix.Length]
+            : normalized;
+    }
 
     private static bool TryParse(string value, out Version version)
     {
