@@ -11,9 +11,13 @@ namespace MvCraftoriaUpdater.Services;
 
 internal sealed class CurseForgeImportService
 {
-    private const int FileNameControlId = 1148;
-    private const int OpenButtonControlId = 1;
-    private const uint ButtonClick = 0x00F5;
+    private const uint MouseLeftDown = 0x0002;
+    private const uint MouseLeftUp = 0x0004;
+    private const uint KeyboardInput = 1;
+    private const uint KeyUp = 0x0002;
+    private const uint UnicodeKey = 0x0004;
+    private const ushort VirtualKeyA = 0x41;
+    private const ushort VirtualKeyControl = 0x11;
     private readonly UpdaterConfiguration configuration;
     private readonly CurseForgeLocator locator;
 
@@ -95,10 +99,18 @@ internal sealed class CurseForgeImportService
                 .FirstOrDefault(profile =>
                     !previousPaths.Contains(profile.Path) &&
                     string.Equals(profile.Name, profileName, StringComparison.OrdinalIgnoreCase));
-            if (imported is not null) return imported;
+            if (imported is not null &&
+                !string.Equals(imported.Version, "Unknown", StringComparison.OrdinalIgnoreCase) &&
+                IsProfileReady(curseForge, profileName))
+            {
+                return imported;
+            }
 
             nextProgress = Math.Min(94, nextProgress + 0.2);
-            progress?.Report(new UpdateProgress(nextProgress, "CurseForge is installing", "Waiting for My Modpacks registration"));
+            progress?.Report(new UpdateProgress(
+                nextProgress,
+                "CurseForge is installing",
+                imported is null ? "Waiting for My Modpacks registration" : "Downloading and installing profile files"));
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         }
         throw new TimeoutException("CurseForge did not finish importing the new client within 30 minutes.");
@@ -115,34 +127,31 @@ internal sealed class CurseForgeImportService
 
         var fileDialog = FindEnabled(root, "Select File", ControlType.Window, TimeSpan.FromSeconds(15), cancellationToken);
         var dialogHandle = new IntPtr(fileDialog.Current.NativeWindowHandle);
-        var fileNameHandle = GetDlgItem(dialogHandle, FileNameControlId);
-        var openButtonHandle = GetDlgItem(dialogHandle, OpenButtonControlId);
-        if (fileNameHandle == IntPtr.Zero || openButtonHandle == IntPtr.Zero)
-        {
-            throw new InvalidOperationException("CurseForge's file picker could not be controlled.");
-        }
-        if (!SetWindowText(fileNameHandle, archivePath))
-        {
-            throw new InvalidOperationException("The CurseForge import package could not be selected.");
-        }
-        SendMessage(openButtonHandle, ButtonClick, IntPtr.Zero, IntPtr.Zero);
+        SetForegroundWindow(dialogHandle);
+        var fileName = FindByAutomationId(root, "1148", TimeSpan.FromSeconds(10), cancellationToken);
+        ClickCenter(fileName);
+        SendKeyChord(VirtualKeyControl, VirtualKeyA);
+        SendUnicodeText(archivePath);
+        var openButton = FindEnabled(root, "Open", ControlType.Pane, TimeSpan.FromSeconds(10), cancellationToken);
+        ClickCenter(openButton);
 
         var safetyDeadline = DateTime.UtcNow.AddMinutes(10);
         while (DateTime.UtcNow < safetyDeadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             root = AutomationElement.FromHandle(process.MainWindowHandle);
-            var allFiles = TryFindEnabled(root, "All Files", ControlType.Button);
+            var allFiles = TryFind(root, "All Files", ControlType.Button);
             if (allFiles is not null)
             {
-                var checkbox = FindEnabled(
+                var checkboxText = FindEnabled(
                     root,
                     "I understand that installing all files is at my own risk.",
-                    ControlType.CheckBox,
+                    ControlType.Text,
                     TimeSpan.FromSeconds(10),
                     cancellationToken);
-                var toggle = (TogglePattern)checkbox.GetCurrentPattern(TogglePattern.Pattern);
-                if (toggle.Current.ToggleState != ToggleState.On) toggle.Toggle();
+                var checkbox = TreeWalker.RawViewWalker.GetParent(checkboxText)
+                    ?? throw new InvalidOperationException("CurseForge's All Files confirmation could not be controlled.");
+                ClickCenter(checkbox);
                 allFiles = FindEnabled(root, "All Files", ControlType.Button, TimeSpan.FromSeconds(10), cancellationToken);
                 Invoke(allFiles);
                 return;
@@ -183,6 +192,114 @@ internal sealed class CurseForgeImportService
             new PropertyCondition(AutomationElement.ControlTypeProperty, controlType),
             new PropertyCondition(AutomationElement.IsEnabledProperty, true));
         return root.FindFirst(TreeScope.Descendants, condition);
+    }
+
+    private static AutomationElement? TryFind(AutomationElement root, string name, ControlType controlType)
+    {
+        var condition = new AndCondition(
+            new PropertyCondition(AutomationElement.NameProperty, name),
+            new PropertyCondition(AutomationElement.ControlTypeProperty, controlType));
+        return root.FindFirst(TreeScope.Descendants, condition);
+    }
+
+    private static AutomationElement FindByAutomationId(
+        AutomationElement root,
+        string automationId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        var condition = new PropertyCondition(AutomationElement.AutomationIdProperty, automationId);
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var element = root.FindFirst(TreeScope.Descendants, condition);
+            if (element is not null) return element;
+            Thread.Sleep(200);
+        }
+        throw new TimeoutException("CurseForge's file-name control was not found.");
+    }
+
+    private static bool IsProfileReady(Process process, string profileName)
+    {
+        try
+        {
+            var root = AutomationElement.FromHandle(process.MainWindowHandle);
+            var buttons = root.FindAll(
+                TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+            foreach (AutomationElement button in buttons)
+            {
+                var name = button.Current.Name;
+                if (name.StartsWith(profileName + " ", StringComparison.OrdinalIgnoreCase) &&
+                    name.Contains(" Play", StringComparison.OrdinalIgnoreCase) &&
+                    !name.Contains("Installing", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (ElementNotAvailableException)
+        {
+            // CurseForge is refreshing the profile card; poll again.
+        }
+        return false;
+    }
+
+    private static void ClickCenter(AutomationElement element)
+    {
+        var rectangle = element.Current.BoundingRectangle;
+        if (rectangle.IsEmpty) throw new InvalidOperationException("A required CurseForge control is not visible.");
+        var x = checked((int)Math.Round(rectangle.Left + rectangle.Width / 2));
+        var y = checked((int)Math.Round(rectangle.Top + rectangle.Height / 2));
+        if (!SetCursorPos(x, y)) throw new InvalidOperationException("The mouse could not be positioned over CurseForge.");
+        mouse_event(MouseLeftDown, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(MouseLeftUp, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    private static void SendKeyChord(ushort modifier, ushort key)
+    {
+        SendVirtualKey(modifier, keyUp: false);
+        SendVirtualKey(key, keyUp: false);
+        SendVirtualKey(key, keyUp: true);
+        SendVirtualKey(modifier, keyUp: true);
+    }
+
+    private static void SendVirtualKey(ushort key, bool keyUp)
+    {
+        var input = new Input
+        {
+            Type = KeyboardInput,
+            Data = new InputUnion
+            {
+                Keyboard = new KeyboardInputData { VirtualKey = key, Flags = keyUp ? KeyUp : 0 }
+            }
+        };
+        if (SendInput(1, [input], Marshal.SizeOf<Input>()) != 1)
+        {
+            throw new InvalidOperationException("Keyboard input could not be sent to CurseForge.");
+        }
+    }
+
+    private static void SendUnicodeText(string value)
+    {
+        foreach (var character in value)
+        {
+            var down = new Input
+            {
+                Type = KeyboardInput,
+                Data = new InputUnion
+                {
+                    Keyboard = new KeyboardInputData { ScanCode = character, Flags = UnicodeKey }
+                }
+            };
+            var up = down;
+            up.Data.Keyboard.Flags = UnicodeKey | KeyUp;
+            if (SendInput(2, [down, up], Marshal.SizeOf<Input>()) != 2)
+            {
+                throw new InvalidOperationException("The CurseForge import path could not be entered.");
+            }
+        }
     }
 
     private static void Invoke(AutomationElement element) =>
@@ -248,13 +365,61 @@ internal sealed class CurseForgeImportService
         }
     }
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr GetDlgItem(IntPtr dialog, int controlId);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowText(IntPtr window, string text);
+    private static extern bool SetForegroundWindow(IntPtr window);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
 
     [DllImport("user32.dll")]
-    private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    private static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extraInfo);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, Input[] inputs, int size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input
+    {
+        internal uint Type;
+        internal InputUnion Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] internal MouseInputData Mouse;
+        [FieldOffset(0)] internal KeyboardInputData Keyboard;
+        [FieldOffset(0)] internal HardwareInputData Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInputData
+    {
+        internal int X;
+        internal int Y;
+        internal uint MouseData;
+        internal uint Flags;
+        internal uint Time;
+        internal UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KeyboardInputData
+    {
+        internal ushort VirtualKey;
+        internal ushort ScanCode;
+        internal uint Flags;
+        internal uint Time;
+        internal UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HardwareInputData
+    {
+        internal uint Message;
+        internal ushort ParameterLow;
+        internal ushort ParameterHigh;
+    }
 }
