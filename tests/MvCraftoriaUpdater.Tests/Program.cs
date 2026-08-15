@@ -7,6 +7,22 @@ using System.Text.Json.Nodes;
 using MvCraftoriaUpdater.Models;
 using MvCraftoriaUpdater.Services;
 
+if (args.Contains("--verify-live", StringComparer.OrdinalIgnoreCase))
+{
+    var liveConfig = new UpdaterConfiguration
+    {
+        ProductName = "MV Craftoria",
+        Repository = "KazzKamikaze/mv-craftoria-release"
+    };
+    using var liveClient = new GitHubReleaseClient(liveConfig);
+    var releases = await liveClient.GetVerifiedReleasesAsync(CancellationToken.None);
+    var release = releases.First(item => item.Manifest.Version == "1.0.0-final");
+    Assert(release.Manifest.Package.AssetName == "MV-Craftoria-1.0.0.zip", "live package filename");
+    Assert(release.Manifest.Package.Size == 1_063_189_726, "live package size");
+    Console.WriteLine($"MV_UPDATER_LIVE_RELEASE_VERIFIED {release.DisplayName} {release.Manifest.Package.AssetName}");
+    return;
+}
+
 var root = Path.Combine(Path.GetTempPath(), "mv-updater-test-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 try

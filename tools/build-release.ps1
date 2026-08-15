@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)] [string] $Version,
     [Parameter(Mandatory)] [string] $SourceDirectory,
     [Parameter(Mandatory)] [string] $OutputDirectory,
+    [string] $PackageFileName,
     [string[]] $SupportedFrom = @('NOT_INSTALLED', '1.0.0-final'),
     [string] $Summary = 'A new MV Craftoria client release is available.',
     [string[]] $Changelog = @('Client files updated.'),
@@ -63,7 +64,14 @@ try {
     $utf8 = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText((Join-Path $session 'mv-patch.json'), ($patch | ConvertTo-Json -Depth 8), $utf8)
 
-    $packageName = "MV-Craftoria-$Version.zip"
+    $packageName = if ([string]::IsNullOrWhiteSpace($PackageFileName)) {
+        "MV-Craftoria-$Version.zip"
+    } else {
+        [IO.Path]::GetFileName($PackageFileName)
+    }
+    if ([IO.Path]::GetExtension($packageName) -ne '.zip') {
+        throw 'PackageFileName must use the .zip extension.'
+    }
     $packagePath = Join-Path $output $packageName
     Compress-Archive -Path (Join-Path $session '*') -DestinationPath $packagePath -CompressionLevel Optimal -Force
     $packageInfo = Get-Item -LiteralPath $packagePath
