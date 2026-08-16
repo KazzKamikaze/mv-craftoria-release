@@ -47,7 +47,9 @@
                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="7" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="10" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="10" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel>
@@ -63,6 +65,9 @@
                         </ComboBox.ItemTemplate>
                     </ComboBox>
                     <Button Grid.Row="2" Grid.Column="2" Content="Browse Client" Command="{Binding BrowseCommand}" Padding="13,8" />
+                    <Button Grid.Row="2" Grid.Column="4" Content="Locate Instances"
+                            Command="{Binding BrowseCurseForgeCommand}" Padding="13,8"
+                            ToolTip="Select the CurseForge Minecraft modding folder or its Instances folder" />
                 </Grid>
             </Border>
 
@@ -148,8 +153,9 @@
                         </Style>
                     </Button.Style>
                 </Button>
-                <Button Grid.Column="8" Content="Install as New Client" Command="{Binding InstallNewCommand}" MinWidth="154" />
-                <Button Grid.Column="10" Content="Update Selected Client" Command="{Binding UpdateCommand}"
+                <Button Grid.Column="8" Content="Create Separate Client" Command="{Binding InstallNewCommand}"
+                        ToolTip="Creates another CurseForge profile; does not update the selected client" MinWidth="166" />
+                <Button Grid.Column="10" Content="{Binding UpdateActionText}" Command="{Binding UpdateCommand}"
                         Style="{StaticResource PrimaryButton}" MinWidth="164" />
             </Grid>
         </Border>

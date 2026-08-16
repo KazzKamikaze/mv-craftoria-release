@@ -5,7 +5,8 @@ param(
     [string] $Repository = 'KazzKamikaze/mv-craftoria-release',
     [string] $Title,
     [string] $NotesFile,
-    [switch] $Prerelease
+    [switch] $Prerelease,
+    [switch] $ReplaceExisting
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,8 +60,6 @@ try {
     } catch {
         if ($_.Exception.Response.StatusCode.value__ -ne 404) { throw }
     }
-    if ($null -ne $existing) { throw "GitHub release $tag already exists." }
-
     $payload = @{
         tag_name = $tag
         target_commitish = 'main'
@@ -70,9 +69,23 @@ try {
         prerelease = [bool]$Prerelease
     } | ConvertTo-Json
 
-    if (-not $PSCmdlet.ShouldProcess("$Repository $tag", 'Create GitHub release and upload signed assets')) { return }
-    $release = Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json' `
-        -Body $payload -Uri "https://api.github.com/repos/$Repository/releases"
+    $createdRelease = $false
+    if ($null -ne $existing) {
+        if (-not $ReplaceExisting) { throw "GitHub release $tag already exists." }
+        if (-not $PSCmdlet.ShouldProcess("$Repository $tag", 'Replace GitHub release metadata and signed assets')) { return }
+
+        $release = Invoke-RestMethod -Method Patch -Headers $headers -ContentType 'application/json' `
+            -Body $payload -Uri "https://api.github.com/repos/$Repository/releases/$($existing.id)"
+        foreach ($asset in @($existing.assets | Where-Object { $_.name -in $required })) {
+            Invoke-RestMethod -Method Delete -Headers $headers `
+                -Uri "https://api.github.com/repos/$Repository/releases/assets/$($asset.id)" | Out-Null
+        }
+    } else {
+        if (-not $PSCmdlet.ShouldProcess("$Repository $tag", 'Create GitHub release and upload signed assets')) { return }
+        $release = Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json' `
+            -Body $payload -Uri "https://api.github.com/repos/$Repository/releases"
+        $createdRelease = $true
+    }
     $uploadBase = ($release.upload_url -replace '\{\?name,label\}$', '')
 
     try {
@@ -84,8 +97,10 @@ try {
                 -InFile $path -Uri "${uploadBase}?name=$encodedName" | Out-Null
         }
     } catch {
-        Invoke-RestMethod -Method Delete -Headers $headers `
-            -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)" | Out-Null
+        if ($createdRelease) {
+            Invoke-RestMethod -Method Delete -Headers $headers `
+                -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)" | Out-Null
+        }
         throw
     }
 

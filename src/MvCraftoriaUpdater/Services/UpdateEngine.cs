@@ -25,11 +25,22 @@ internal sealed class UpdateEngine
         CancellationToken cancellationToken,
         string? installedProfileName = null)
     {
+        var freshInstall = string.Equals(profile.Version, "NOT_INSTALLED", StringComparison.OrdinalIgnoreCase);
+        var profileMetadataPath = Path.Combine(profile.Path, "minecraftinstance.json");
+        if (!freshInstall && (!Directory.Exists(profile.Path) || !File.Exists(profileMetadataPath)))
+        {
+            throw new InvalidDataException("The selected CurseForge client no longer exists. Refresh the client list and select it again.");
+        }
+        if (freshInstall && Directory.Exists(profile.Path))
+        {
+            throw new IOException("The new-client destination already exists. Choose another profile name.");
+        }
         if (MinecraftProcessGuard.IsMinecraftRunning())
         {
             throw new InvalidOperationException("Close Minecraft before installing the update.");
         }
-        if (!release.Manifest.SupportedFrom.Contains(profile.Version, StringComparer.OrdinalIgnoreCase))
+        var sameVersion = VersionPolicy.IsSame(profile.Version, release.Manifest.Version);
+        if (!sameVersion && !release.Manifest.SupportedFrom.Contains(profile.Version, StringComparer.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
                 $"Version {profile.Version} cannot update directly to {release.Manifest.Version}. A repair package is required.");
@@ -146,6 +157,10 @@ internal sealed class UpdateEngine
         var touched = new List<TouchedFile>();
         var freshInstall = string.Equals(profile.Version, "NOT_INSTALLED", StringComparison.OrdinalIgnoreCase);
         var identity = freshInstall ? null : ReadProfileIdentity(profile.Path);
+        if (!freshInstall && string.IsNullOrWhiteSpace(identity?.Guid))
+        {
+            throw new InvalidDataException("The selected client has no CurseForge identity and cannot be updated safely.");
+        }
 
         try
         {
@@ -153,6 +168,8 @@ internal sealed class UpdateEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var relative = NormalizeRelativePath(patch.Files[index].Path);
+                if (!freshInstall && IsProfileMetadata(relative)) continue;
+                if (!freshInstall && IsUserOwnedPath(relative)) continue;
                 var source = ResolveSafeChild(stagedPayload, relative);
                 var destination = ResolveSafeChild(profile.Path, relative);
                 Backup(destination, backupRoot, relative, touched);
@@ -178,13 +195,17 @@ internal sealed class UpdateEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var relative = NormalizeRelativePath(deletePath);
+                if (!freshInstall && IsProfileMetadata(relative)) continue;
+                if (!freshInstall && IsUserOwnedPath(relative)) continue;
                 var destination = ResolveSafeChild(profile.Path, relative);
                 if (!File.Exists(destination)) continue;
                 Backup(destination, backupRoot, relative, touched);
                 File.Delete(destination);
             }
 
-            RewriteProfileIdentity(profile.Path, installedProfileName, freshInstall, identity);
+            // Existing profiles keep minecraftinstance.json byte-for-byte. Editing
+            // CurseForge identity metadata can make its agent register a duplicate.
+            if (freshInstall) RewriteProfileIdentity(profile.Path, installedProfileName, true, null);
 
             var state = new InstalledState
             {
@@ -252,14 +273,8 @@ internal sealed class UpdateEngine
         }
         else if (identity is not null)
         {
-            root["name"] = profileName;
             root["guid"] = identity.Guid;
-            root["installPath"] = identity.InstallPath ?? Path.GetFileName(profilePath);
-            root["lastPlayed"] = identity.LastPlayed?.DeepClone();
-            root["playedCount"] = identity.PlayedCount?.DeepClone();
-            root["timePlayed"] = identity.TimePlayed?.DeepClone();
-            root["installDate"] = identity.InstallDate?.DeepClone();
-            root["groupId"] = identity.GroupId?.DeepClone();
+            root["installPath"] = AbsoluteDirectoryPath(profilePath);
         }
         File.WriteAllText(path, root.ToJsonString(JsonDefaults.Options), new UTF8Encoding(false));
     }
@@ -338,6 +353,16 @@ internal sealed class UpdateEngine
             throw new InvalidDataException($"Unsafe patch path: {value}");
         }
         return normalized;
+    }
+
+    private static bool IsProfileMetadata(string relative) =>
+        string.Equals(relative, "minecraftinstance.json", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUserOwnedPath(string relative)
+    {
+        var normalized = relative.Replace('\\', '/');
+        return string.Equals(normalized, "config/DistantHorizons.toml", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("Distant_Horizons_server_data/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ResolveSafeChild(string root, string relative)

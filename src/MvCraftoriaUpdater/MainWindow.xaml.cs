@@ -21,6 +21,7 @@ public partial class MainWindow : Window
                 UpdaterDialog.ShowInformation(this, title, message)
         };
         viewModel.BrowseRequested += BrowseForProfile;
+        viewModel.BrowseInstancesRequested += BrowseForInstances;
         DataContext = viewModel;
         Loaded += async (_, _) => await viewModel.InitializeAsync();
         Closed += (_, _) => viewModel.Dispose();
@@ -35,5 +36,16 @@ public partial class MainWindow : Window
             Multiselect = false
         };
         if (dialog.ShowDialog(this) == true) viewModel.AddManualProfile(dialog.FolderName);
+    }
+
+    private void BrowseForInstances(object? sender, EventArgs e)
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "Select the CurseForge Minecraft modding folder or Instances folder",
+            Multiselect = false,
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+        };
+        if (dialog.ShowDialog(this) == true) viewModel.SetInstanceRoot(dialog.FolderName);
     }
 }

@@ -80,7 +80,67 @@ try
             !CurseForgeLocator.ContainsRegisteredProfile(database.RootElement, targetPath, "MV Craftoria Wrong"),
             "CurseForge registration name isolation");
     }
-
+    Assert(
+        CurseForgeProcessService.ParseExecutableFromCommand("\"C:\\Tools\\CurseForge.exe\" \"%1\"") == @"C:\Tools\CurseForge.exe",
+        "quoted CurseForge protocol command parsing");
+    Assert(
+        CurseForgeProcessService.ParseExecutableFromCommand(@"C:\Tools\CurseForge.exe --open") == @"C:\Tools\CurseForge.exe",
+        "unquoted CurseForge protocol command parsing");
+    var fakeCurseForge = Path.Combine(root, "CurseForge.exe");
+    File.WriteAllBytes(fakeCurseForge, []);
+    Assert(CurseForgeProcessService.IsSupportedExecutable(fakeCurseForge), "manual CurseForge executable validation");
+    Assert(!CurseForgeProcessService.IsSupportedExecutable(metadataPath), "manual executable rejects non-applications");
+    var fakeOverwolf = Path.Combine(root, "OverwolfLauncher.exe");
+    File.WriteAllBytes(fakeOverwolf, []);
+    Assert(!CurseForgeProcessService.IsSupportedExecutable(fakeOverwolf), "Overwolf is never accepted as CurseForge");
+    Assert(!CurseForgeProcessService.IsSupportedLaunchTarget(fakeOverwolf), "generic Overwolf launcher is never accepted");
+    var fakeCurseForgeShortcut = Path.Combine(root, "CurseForge.lnk");
+    File.WriteAllBytes(fakeCurseForgeShortcut, []);
+    Assert(CurseForgeProcessService.IsSupportedLaunchTarget(fakeCurseForgeShortcut),
+        "CurseForge shortcut is accepted for standalone and Overwolf editions");
+    var fakeOverwolfShortcut = Path.Combine(root, "Overwolf.lnk");
+    File.WriteAllBytes(fakeOverwolfShortcut, []);
+    Assert(!CurseForgeProcessService.IsSupportedLaunchTarget(fakeOverwolfShortcut),
+        "generic Overwolf shortcut is never accepted");
+    var standaloneDatabase = Path.Combine(root, "standalone", "MinecraftGameInstance.json");
+    var overwolfDatabase = Path.Combine(root, "overwolf", "MinecraftGameInstance.json");
+    Directory.CreateDirectory(Path.GetDirectoryName(standaloneDatabase)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(overwolfDatabase)!);
+    File.WriteAllText(standaloneDatabase,
+        $$"""[{"installPath":{{JsonSerializer.Serialize(targetPath)}}}]""");
+    var secondRegisteredPath = Path.Combine(root, "Instances", "MV Craftoria Overwolf");
+    File.WriteAllText(overwolfDatabase,
+        $$"""[{"installPath":{{JsonSerializer.Serialize(secondRegisteredPath)}}}]""");
+    var pathsAcrossEditions = CurseForgeLocator.ReadRegisteredProfilePathsFromDatabases(
+        [standaloneDatabase, overwolfDatabase]);
+    Assert(pathsAcrossEditions.Contains(Path.GetFullPath(targetPath), StringComparer.OrdinalIgnoreCase),
+        "standalone registration database is read");
+    Assert(pathsAcrossEditions.Contains(Path.GetFullPath(secondRegisteredPath), StringComparer.OrdinalIgnoreCase),
+        "Overwolf registration database is read");
+    var selectedModdingRoot = Path.Combine(root, "custom-curseforge", "minecraft");
+    var selectedInstancesRoot = Path.Combine(selectedModdingRoot, "Instances");
+    var selectedProfileRoot = Path.Combine(selectedInstancesRoot, "MV Craftoria");
+    Directory.CreateDirectory(selectedProfileRoot);
+    File.WriteAllText(Path.Combine(selectedProfileRoot, "minecraftinstance.json"), "{}");
+    Assert(CurseForgeLocator.ResolveInstanceRootSelection(selectedModdingRoot) == selectedInstancesRoot,
+        "manual modding folder resolves Instances");
+    Assert(CurseForgeLocator.ResolveInstanceRootSelection(selectedInstancesRoot) == selectedInstancesRoot,
+        "manual Instances folder remains unchanged");
+    Assert(CurseForgeLocator.ResolveInstanceRootSelection(selectedProfileRoot) == selectedInstancesRoot,
+        "manual profile folder resolves parent Instances");
+    Assert(CurseForgeProcessService.IsMaintenanceProcessName("CurseForge"), "CurseForge process detection");
+    Assert(CurseForgeProcessService.IsMaintenanceProcessName("CurseForgeApp"), "alternate CurseForge process detection");
+    Assert(CurseForgeProcessService.IsMaintenanceProcessName("Curse.Agent.Host"), "CurseForge agent process detection");
+    Assert(!CurseForgeProcessService.IsMaintenanceProcessName("Overwolf"), "Overwolf process exclusion");
+    Assert(CurseForgeProcessService.IsHostedCurseForgeWindow("Overwolf", "CurseForge"), "hosted CurseForge window detection");
+    Assert(!CurseForgeProcessService.IsHostedCurseForgeWindow("Overwolf", "Overwolf"), "generic Overwolf window exclusion");
+    var caseInsensitiveStatePath = Path.Combine(targetPath, ".mv-update", "state.json");
+    File.WriteAllText(caseInsensitiveStatePath, "{\"Product\":\"MV Craftoria\",\"Version\":\"1.1.0\"}");
+    var locator = new CurseForgeLocator();
+    Assert(locator.TryReadProfile(targetPath + Path.DirectorySeparatorChar, "MV Craftoria")?.Version == "1.1.0",
+        "installed state properties are case-insensitive");
+    Assert(locator.TryReadProfile(targetPath, "MV Craftoria")?.Path == Path.TrimEndingDirectorySeparator(Path.GetFullPath(targetPath)),
+        "profile paths are normalized for deduplication");
     var cleanupPath = Path.Combine(root, "partial-download");
     Directory.CreateDirectory(cleanupPath);
     var readOnlyDownload = Path.Combine(cleanupPath, "partial.zip");
@@ -91,7 +151,17 @@ try
     var preservedGuid = installed["guid"]!.GetValue<string>();
     installed["playedCount"] = 42;
     installed["timePlayed"] = 9876;
+    installed["customProfileData"] = new JsonObject
+    {
+        ["keepMe"] = true,
+        ["machineSpecific"] = "preserved"
+    };
     File.WriteAllText(metadataPath, installed.ToJsonString(JsonDefaults.Options));
+    var metadataBeforeUpdate = File.ReadAllBytes(metadataPath);
+    var distantHorizonsConfig = Path.Combine(targetPath, "config", "DistantHorizons.toml");
+    File.WriteAllText(distantHorizonsConfig, "lodChunkRenderDistanceRadius = 321\nuserOwned = true\n");
+    var distantHorizonsBeforeUpdate = File.ReadAllBytes(distantHorizonsConfig);
+    var instanceDirectoriesBeforeUpdate = Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().ToArray();
 
     var second = CreatePackage(root, "1.1.0", ["1.0.0"]);
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
@@ -107,12 +177,45 @@ try
     }
 
     var updated = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
-    Assert(updated["name"]!.GetValue<string>() == "MV Craftoria 1.1.0", "updated profile name");
+    Assert(updated["name"]!.GetValue<string>() == "MV Craftoria 1.0.0", "in-place update retains profile name");
     Assert(updated["guid"]!.GetValue<string>() == preservedGuid, "updated GUID preservation");
     Assert(updated["playedCount"]!.GetValue<int>() == 42, "updated played count preservation");
     Assert(updated["timePlayed"]!.GetValue<int>() == 9876, "updated play time preservation");
+    Assert(updated["customProfileData"]!["keepMe"]!.GetValue<bool>(), "complete CurseForge profile metadata preservation");
+    Assert(updated["customProfileData"]!["machineSpecific"]!.GetValue<string>() == "preserved", "machine-specific profile metadata preservation");
+    Assert(File.ReadAllBytes(metadataPath).SequenceEqual(metadataBeforeUpdate), "in-place update preserves profile metadata byte-for-byte");
+    Assert(Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().SequenceEqual(instanceDirectoriesBeforeUpdate),
+        "in-place update does not create another client directory");
     Assert(File.ReadAllText(sentinelPath) == "untouched", "non-selected client isolation");
     Assert(File.ReadAllText(Path.Combine(targetPath, "config", "version.txt")) == "1.1.0", "selected client update");
+    Assert(File.ReadAllBytes(distantHorizonsConfig).SequenceEqual(distantHorizonsBeforeUpdate),
+        "existing-client update preserves Distant Horizons config byte-for-byte");
+
+    var instanceDirectoriesBeforeRepair = Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().ToArray();
+    using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
+    {
+        var target = new CurseForgeProfile("MV Craftoria 1.1.0", targetPath, "1.1.0", "1.21.1");
+        await engine.InstallAsync(
+            target,
+            second.Release,
+            client,
+            null,
+            CancellationToken.None,
+            VersionPolicy.ProfileName(config.ProductName, second.Release.Manifest.Version));
+    }
+
+    var repaired = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
+    Assert(repaired["name"]!.GetValue<string>() == "MV Craftoria 1.0.0", "same-version repair retains profile name");
+    Assert(repaired["guid"]!.GetValue<string>() == preservedGuid, "same-version repair GUID preservation");
+    Assert(repaired["playedCount"]!.GetValue<int>() == 42, "same-version repair play count preservation");
+    Assert(repaired["customProfileData"]!["machineSpecific"]!.GetValue<string>() == "preserved",
+        "same-version repair machine metadata preservation");
+    Assert(File.ReadAllBytes(metadataPath).SequenceEqual(metadataBeforeUpdate), "same-version repair preserves profile metadata byte-for-byte");
+    Assert(Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().SequenceEqual(instanceDirectoriesBeforeRepair),
+        "same-version repair does not create another client directory");
+    Assert(File.ReadAllText(Path.Combine(targetPath, "config", "version.txt")) == "1.1.0", "same-version repair reapplies managed files");
+    Assert(File.ReadAllBytes(distantHorizonsConfig).SequenceEqual(distantHorizonsBeforeUpdate),
+        "same-version repair preserves Distant Horizons config byte-for-byte");
     Console.WriteLine("MV_UPDATER_PROFILE_AND_VERSION_TEST_PASSED");
 }
 finally
@@ -140,6 +243,8 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(string root, string
     };
     File.WriteAllText(Path.Combine(payload, "minecraftinstance.json"), metadata.ToJsonString(JsonDefaults.Options));
     File.WriteAllText(Path.Combine(payload, "config", "version.txt"), version);
+    File.WriteAllText(Path.Combine(payload, "config", "DistantHorizons.toml"),
+        $"lodChunkRenderDistanceRadius = 128\nrelease = {version}\n");
     var files = Directory.EnumerateFiles(payload, "*", SearchOption.AllDirectories).Select(path => new PatchFile
     {
         Path = Path.GetRelativePath(payload, path).Replace('\\', '/'),

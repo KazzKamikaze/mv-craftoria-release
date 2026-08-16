@@ -35,11 +35,13 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         InstallNewCommand = new AsyncRelayCommand(InstallAsNewClientAsync, CanInstallNew);
         CancelCommand = new RelayCommand(CancelOperation, () => CanCancel);
         BrowseCommand = new RelayCommand(() => BrowseRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
+        BrowseCurseForgeCommand = new RelayCommand(() => BrowseInstancesRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
         OpenReleaseCommand = new RelayCommand(OpenRelease, () => SelectedRelease is not null);
         OpenLogsCommand = new RelayCommand(OpenLogs);
     }
 
     internal event EventHandler? BrowseRequested;
+    internal event EventHandler? BrowseInstancesRequested;
     internal Func<string, string, string, bool>? ConfirmInstall { get; set; }
     internal Action<string, string>? ShowMessage { get; set; }
 
@@ -51,6 +53,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand InstallNewCommand { get; }
     public RelayCommand CancelCommand { get; }
     public RelayCommand BrowseCommand { get; }
+    public RelayCommand BrowseCurseForgeCommand { get; }
     public RelayCommand OpenReleaseCommand { get; }
     public RelayCommand OpenLogsCommand { get; }
 
@@ -92,6 +95,11 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     public string ProfileStatus { get => profileStatus; private set => SetProperty(ref profileStatus, value); }
     public double Progress { get => progress; private set => SetProperty(ref progress, value); }
     public bool CanCancel => IsBusy && operationCancellation is not null;
+    public string UpdateActionText =>
+        SelectedProfile is not null && SelectedRelease is not null &&
+        VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version)
+            ? "Reinstall Current Version"
+            : "Update Selected Client";
 
     public bool IsBusy
     {
@@ -131,6 +139,29 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         if (existing is null) Profiles.Add(profile);
         SelectedProfile = existing ?? profile;
         return true;
+    }
+
+    internal bool SetInstanceRoot(string path)
+    {
+        try
+        {
+            var root = CurseForgeLocator.ResolveInstanceRootSelection(path)
+                ?? throw new DirectoryNotFoundException(
+                    "Select the CurseForge Minecraft modding folder, its Instances folder, or an installed profile folder.");
+            UpdaterSettingsService.SaveInstanceRoot(root);
+            ReloadProfiles();
+            ShowMessage?.Invoke(
+                $"CurseForge Minecraft instances were located successfully.\n\n{root}",
+                "Instances folder located");
+            RefreshCommandStates();
+            return true;
+        }
+        catch (Exception exception)
+        {
+            AppLog.Error("Manual CurseForge Instances selection failed", exception);
+            ShowMessage?.Invoke(FriendlyError(exception), "Minecraft folder not recognized");
+            return false;
+        }
     }
 
     public void Dispose() => releaseClient.Dispose();
@@ -183,18 +214,28 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private async Task UpdateSelectedClientAsync()
     {
         if (SelectedProfile is null || SelectedRelease is null) return;
-        var updatedName = VersionPolicy.ProfileName(configuration.ProductName, SelectedRelease.Manifest.Version);
-        var prompt = $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} will be updated from " +
-                     $"{VersionPolicy.Display(SelectedProfile.Version)} to {VersionPolicy.Display(SelectedRelease.Manifest.Version)} " +
-                     $"and renamed to '{updatedName}'.\n\n" +
-                     "Personal settings, worlds, screenshots, and map data will remain untouched. CurseForge must close " +
-                     "during the update and will reopen automatically when it is finished.";
-        if (ConfirmInstall?.Invoke("Confirm client update", prompt, "Update Client") != true) return;
+        var retainedName = SelectedProfile.Name;
+        var reinstall = VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version);
+        var prompt = reinstall
+            ? $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} is already up to date on " +
+              $"{VersionPolicy.Display(SelectedRelease.Manifest.Version)}.\n\n" +
+              "Do you want to reinstall this update as a repair? Managed modpack files will be verified and reapplied. " +
+              "Personal settings, worlds, screenshots, map data, and the existing CurseForge profile identity will remain untouched. " +
+              "CurseForge must close during the repair and will remain closed when it is finished."
+            : $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} will be updated from " +
+              $"{VersionPolicy.Display(SelectedProfile.Version)} to {VersionPolicy.Display(SelectedRelease.Manifest.Version)} " +
+              "in its existing profile.\n\n" +
+              "Personal settings, worlds, screenshots, map data, profile name, and profile identity will remain untouched. " +
+              "CurseForge must close during the update and will remain closed when it is finished.";
+        var title = reinstall ? "Reinstall current version?" : "Confirm client update";
+        var action = reinstall ? "Reinstall Update" : "Update Client";
+        if (ConfirmInstall?.Invoke(title, prompt, action) != true) return;
         await InstallWithCurseForgeRestartAsync(
             SelectedProfile,
             SelectedRelease,
-            updatedName,
-            false);
+            retainedName,
+            false,
+            reinstall);
     }
 
     private async Task InstallAsNewClientAsync()
@@ -212,34 +253,36 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             Path.Combine(instanceRoot, profileName),
             NotInstalledVersion,
             "1.21.1");
-        var prompt = $"A new CurseForge client named '{profileName}' will be installed with version " +
+        var prompt = "This does NOT update your selected client. It creates a completely separate CurseForge profile.\n\n" +
+                     $"A new CurseForge client named '{profileName}' will be installed with version " +
                      $"{VersionPolicy.Display(SelectedRelease.Manifest.Version)}.\n\n" +
                      "Your existing clients will not be changed. CurseForge must close during installation and will " +
                      "reopen automatically when the new client is ready.";
-        if (ConfirmInstall?.Invoke("Confirm new client installation", prompt, "Install Client") != true) return;
-        await InstallWithCurseForgeRestartAsync(target, SelectedRelease, profileName, true);
+        if (ConfirmInstall?.Invoke("Create a separate client?", prompt, "Create Separate Client") != true) return;
+        await InstallWithCurseForgeRestartAsync(target, SelectedRelease, profileName, true, false);
     }
 
     private async Task InstallWithCurseForgeRestartAsync(
         CurseForgeProfile target,
         VerifiedRelease release,
         string installedName,
-        bool newClient)
+        bool newClient,
+        bool reinstall)
     {
-        CurseForgeRestartSession? restartSession = null;
         var installed = false;
-        var curseForgeReopened = false;
+        CurseForgeRestartSession? maintenanceSession = null;
         operationCancellation = new CancellationTokenSource();
         OnPropertyChanged(nameof(CanCancel));
         var cancellationToken = operationCancellation.Token;
         IsBusy = true;
         try
         {
+            AppLog.Info($"Starting {(newClient ? "separate client installation" : "in-place client update")}: {target.Path}");
             StatusTitle = newClient ? "Installing MV Craftoria" : "Preparing CurseForge";
             StatusDetail = newClient
                 ? "Preparing your new client"
                 : "CurseForge is closing and will be unavailable until the operation finishes";
-            restartSession = await CurseForgeProcessService.PrepareForMaintenanceAsync(cancellationToken);
+            maintenanceSession = await CurseForgeProcessService.PrepareForMaintenanceAsync(cancellationToken);
             installed = await InstallAsync(target, release, installedName, newClient, cancellationToken);
             if (!installed)
             {
@@ -250,8 +293,13 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            CurseForgeProcessService.Launch(restartSession, startMinimized: newClient);
-            curseForgeReopened = true;
+            var curseForgeOpenedForRegistration = newClient &&
+                CurseForgeProcessService.TryLaunchCurseForge(maintenanceSession);
+            if (newClient && !curseForgeOpenedForRegistration)
+            {
+                throw new FileNotFoundException(
+                    "CurseForge could not be reopened. Start CurseForge once from Overwolf or its Start-menu shortcut, close it, and retry.");
+            }
 
             if (newClient)
             {
@@ -260,6 +308,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 var registered = await locator.WaitForRegisteredProfileAsync(
                     target.Path,
                     installedName,
+                    CurseForgeLocator.TryReadProfileGuid(target.Path),
                     TimeSpan.FromMinutes(2),
                     cancellationToken);
                 ReloadProfiles(registered.Path);
@@ -273,12 +322,15 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             }
             else
             {
-                StatusTitle = "Update complete";
-                StatusDetail = $"Installed {VersionPolicy.Display(release.Manifest.Version)}. CurseForge has reopened.";
+                StatusTitle = reinstall ? "Repair complete" : "Update complete";
+                ReloadProfiles(target.Path);
+                StatusDetail = $"{(reinstall ? "Reinstalled" : "Installed")} {VersionPolicy.Display(release.Manifest.Version)}. Open CurseForge to play.";
                 ShowMessage?.Invoke(
-                    $"{VersionPolicy.DisplayProfileName(installedName)} was updated successfully to " +
-                    $"{VersionPolicy.Display(release.Manifest.Version)}.\n\nCurseForge has reopened and the client is ready to play.",
-                    "Update complete");
+                    $"{VersionPolicy.DisplayProfileName(target.Name)} was " +
+                    $"{(reinstall ? "repaired successfully on" : "updated successfully to")} " +
+                    $"{VersionPolicy.Display(release.Manifest.Version)}.\n\n" +
+                    "The original CurseForge profile was retained. Open CurseForge manually when you are ready to play.",
+                    reinstall ? "Repair complete" : "Update complete");
             }
         }
         catch (OperationCanceledException)
@@ -298,28 +350,16 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             {
                 WorkDirectoryCleaner.DeleteDirectory(target.Path, "incomplete new client");
             }
-            StatusTitle = newClient ? "Client installation failed" : "CurseForge could not be prepared";
+            StatusTitle = newClient ? "Client installation failed" : "Update was not installed";
             StatusDetail = FriendlyError(exception);
             Progress = 0;
             AppLog.Error(newClient ? "Background client installation failed" : "CurseForge maintenance preparation failed", exception);
             ShowMessage?.Invoke(
                 StatusDetail + "\n\nTemporary downloads and incomplete client files were removed.",
-                newClient ? "Installation failed" : "CurseForge restart required");
+                newClient ? "Installation failed" : "Update failed");
         }
         finally
         {
-            if (restartSession is not null && !curseForgeReopened)
-            {
-                try
-                {
-                    CurseForgeProcessService.Launch(restartSession, startMinimized: newClient);
-                    curseForgeReopened = true;
-                }
-                catch (Exception exception)
-                {
-                    AppLog.Error("CurseForge relaunch failed", exception);
-                }
-            }
             operationCancellation.Dispose();
             operationCancellation = null;
             IsBusy = false;
@@ -361,8 +401,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             ReloadProfiles(target.Path);
             StatusTitle = newClient ? "New client created" : "Selected client updated";
             StatusDetail = newClient
-                ? $"{installedName} was installed. Reopening CurseForge."
-                : $"Installed {VersionPolicy.Display(release.Manifest.Version)}. Reopening CurseForge. Recovery backup: {backup}";
+                ? $"{installedName} was installed. Registering it with CurseForge."
+                : $"Installed {VersionPolicy.Display(release.Manifest.Version)} in the selected profile. Recovery backup: {backup}";
             Progress = 100;
             return true;
         }
@@ -401,6 +441,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
     private void EvaluateSelection()
     {
+        OnPropertyChanged(nameof(UpdateActionText));
         if (SelectedRelease is null)
         {
             StatusTitle = "No release selected";
@@ -415,8 +456,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         }
         else if (VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version))
         {
-            StatusTitle = "Selected client already has this version";
-            StatusDetail = "Choose another version or install this release as a separate client.";
+            StatusTitle = "Client is up to date";
+            StatusDetail = "Reinstall the selected release to verify and repair managed modpack files.";
         }
         else if (SelectedRelease.Manifest.SupportedFrom.Contains(SelectedProfile.Version, StringComparer.OrdinalIgnoreCase))
         {
@@ -434,8 +475,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
     private bool CanUpdateSelected() =>
         !IsBusy && SelectedProfile is not null && SelectedRelease is not null &&
-        !VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version) &&
-        SelectedRelease.Manifest.SupportedFrom.Contains(SelectedProfile.Version, StringComparer.OrdinalIgnoreCase);
+        (VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version) ||
+         SelectedRelease.Manifest.SupportedFrom.Contains(SelectedProfile.Version, StringComparer.OrdinalIgnoreCase));
 
     private bool CanInstallNew() =>
         !IsBusy && SelectedRelease is not null &&
@@ -449,6 +490,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         InstallNewCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         BrowseCommand.RaiseCanExecuteChanged();
+        BrowseCurseForgeCommand.RaiseCanExecuteChanged();
         OpenReleaseCommand.RaiseCanExecuteChanged();
     }
 
