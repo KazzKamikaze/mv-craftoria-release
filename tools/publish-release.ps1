@@ -19,11 +19,15 @@ if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
 }
 
 $required = @(
-    "MV-Craftoria-$Version.zip",
-    "MV-Craftoria-$Version-CurseForge-Import.zip",
+    "MV-Craftoria-$Version-UPDATER-DATA.zip",
+    "MV-Craftoria-$Version-MANUAL-INSTALL-CurseForge.zip",
     'mv-release.json',
     'mv-release.sig',
     'MV-Craftoria-Updater.exe'
+)
+$obsoleteAssetNames = @(
+    "MV-Craftoria-$Version.zip",
+    "MV-Craftoria-$Version-CurseForge-Import.zip"
 )
 foreach ($name in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $assets $name) -PathType Leaf)) {
@@ -123,6 +127,14 @@ try {
                         -Uri "https://api.github.com/repos/$Repository/releases/assets/$($previous.Asset.id)" | Out-Null
                 } catch {
                     Write-Warning "The replaced asset $($previous.CanonicalName) could not be removed."
+                }
+            }
+            foreach ($obsolete in @($existing.assets | Where-Object { $_.name -in $obsoleteAssetNames })) {
+                try {
+                    Invoke-RestMethod -Method Delete -Headers $headers `
+                        -Uri "https://api.github.com/repos/$Repository/releases/assets/$($obsolete.id)" | Out-Null
+                } catch {
+                    Write-Warning "The obsolete asset $($obsolete.name) could not be removed."
                 }
             }
         }

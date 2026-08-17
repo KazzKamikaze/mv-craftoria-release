@@ -22,9 +22,9 @@ if (args.Contains("--verify-live", StringComparer.OrdinalIgnoreCase))
     using var liveClient = new GitHubReleaseClient(liveConfig);
     var releases = await liveClient.GetVerifiedReleasesAsync(CancellationToken.None);
     var release = releases.First(item => item.Manifest.Version == expectedVersion);
-    Assert(release.Manifest.Package.AssetName == $"MV-Craftoria-{VersionPolicy.Display(expectedVersion)}.zip", "live package filename");
+    Assert(release.Manifest.Package.AssetName == $"MV-Craftoria-{VersionPolicy.Display(expectedVersion)}-UPDATER-DATA.zip", "live package filename");
     Assert(release.Manifest.Package.Size > 0, "live package size");
-    Assert(release.Manifest.ImportPackage?.AssetName == $"MV-Craftoria-{VersionPolicy.Display(expectedVersion)}-CurseForge-Import.zip", "live import package filename");
+    Assert(release.Manifest.ImportPackage?.AssetName == $"MV-Craftoria-{VersionPolicy.Display(expectedVersion)}-MANUAL-INSTALL-CurseForge.zip", "live import package filename");
     Assert(release.ImportPackageUri is not null, "live import package URL");
     Console.WriteLine($"MV_UPDATER_LIVE_RELEASE_VERIFIED {release.DisplayName} {release.Manifest.Package.AssetName}");
     return;

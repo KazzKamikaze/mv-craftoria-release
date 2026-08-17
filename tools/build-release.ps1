@@ -126,7 +126,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $session 'mv-patch.json'), ($patch | ConvertTo-Json -Depth 8), $utf8)
 
     $packageName = if ([string]::IsNullOrWhiteSpace($PackageFileName)) {
-        "MV-Craftoria-$Version.zip"
+        "MV-Craftoria-$Version-UPDATER-DATA.zip"
     } else {
         [IO.Path]::GetFileName($PackageFileName)
     }
@@ -139,7 +139,7 @@ try {
         $payload
     ) -DestinationPath $packagePath -CompressionLevel Optimal -Force
     $packageInfo = Get-Item -LiteralPath $packagePath
-    $importPackageName = "MV-Craftoria-$displayVersion-CurseForge-Import.zip"
+    $importPackageName = "MV-Craftoria-$displayVersion-MANUAL-INSTALL-CurseForge.zip"
     $importPackagePath = Join-Path $output $importPackageName
     Compress-Archive -Path (Join-Path $importRoot '*') -DestinationPath $importPackagePath -CompressionLevel Optimal -Force
     $importPackageInfo = Get-Item -LiteralPath $importPackagePath

@@ -10,8 +10,8 @@ $ErrorActionPreference = 'Stop'
 $source = [IO.Path]::GetFullPath($SourceAssetDirectory)
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $privateKey = [IO.Path]::GetFullPath($PrivateKeyPath)
-$packageName = "MV-Craftoria-$Version.zip"
-$importName = "MV-Craftoria-$Version-CurseForge-Import.zip"
+$packageName = "MV-Craftoria-$Version-UPDATER-DATA.zip"
+$importName = "MV-Craftoria-$Version-MANUAL-INSTALL-CurseForge.zip"
 $environmentPath = 'config/subtle_effects/environment.toml'
 $utf8 = [Text.UTF8Encoding]::new($false)
 

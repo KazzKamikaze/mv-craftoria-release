@@ -23,7 +23,8 @@ Windows installer and updater for the private MV Craftoria CurseForge profile.
 Every GitHub release must contain:
 
 - `MV-Craftoria-VERSION.zip`
-- `MV-Craftoria-VERSION-CurseForge-Import.zip`
+- `MV-Craftoria-VERSION-MANUAL-INSTALL-CurseForge.zip` for manual CurseForge imports
+- `MV-Craftoria-VERSION-UPDATER-DATA.zip` for the updater only; users must not import it
 - `mv-release.json`
 - `mv-release.sig`
 - `MV-Craftoria-Updater.exe`
