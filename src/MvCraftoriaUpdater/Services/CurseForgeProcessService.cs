@@ -53,21 +53,49 @@ internal static class CurseForgeProcessService
                 {
                     // The process exited between enumeration and termination.
                 }
+                catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+                {
+                    AppLog.Error($"Could not terminate CurseForge process {process.ProcessName}", exception);
+                }
             }
             Dispose(remaining);
+
+            // Overwolf hosts the CurseForge window inside an Overwolf process. Closing
+            // the window is normally enough, but some installations ignore WM_CLOSE.
+            // Kill only that hosted window process, never the complete Overwolf tree.
+            var remainingHostedWindows = GetHostedCurseForgeWindows();
+            foreach (var process in remainingHostedWindows)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: false);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The hosted window exited between enumeration and termination.
+                }
+                catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+                {
+                    AppLog.Error($"Could not terminate hosted CurseForge window {process.ProcessName}", exception);
+                }
+            }
+            Dispose(remainingHostedWindows);
 
             var forcedDeadline = DateTime.UtcNow.AddSeconds(10);
             while (DateTime.UtcNow < forcedDeadline)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var active = GetMaintenanceProcesses();
-                var stopped = active.Length == 0;
+                var activeHostedWindows = GetHostedCurseForgeWindows();
+                var stopped = active.All(process => !IsBlockingMaintenanceProcess(process)) &&
+                              activeHostedWindows.Length == 0;
                 Dispose(active);
+                Dispose(activeHostedWindows);
                 if (stopped) break;
                 await Task.Delay(250, cancellationToken);
             }
             var stillRunning = GetMaintenanceProcesses();
-            var failedToClose = stillRunning.Length > 0;
+            var failedToClose = stillRunning.Any(IsBlockingMaintenanceProcess);
             Dispose(stillRunning);
             if (failedToClose) throw new InvalidOperationException("CurseForge could not be closed for maintenance.");
 
@@ -114,19 +142,6 @@ internal static class CurseForgeProcessService
 
     private static string? FindLaunchTarget(IEnumerable<Process> processes)
     {
-        foreach (var process in processes)
-        {
-            try
-            {
-                var path = process.MainModule?.FileName;
-                if (IsSupportedExecutable(path)) return path;
-            }
-            catch
-            {
-                // Fall through to the standard installation path.
-            }
-        }
-
         var candidates = new List<string?>
         {
             UpdaterSettingsService.LoadCurseForgeExecutable(),
@@ -139,8 +154,28 @@ internal static class CurseForgeProcessService
                 "CurseForge.exe")
         };
         var executable = candidates.FirstOrDefault(IsSupportedExecutable);
-        return executable ?? FindCurseForgeShortcut() ??
-               (IsCurseForgeProtocolRegistered() ? "curseforge://" : null);
+        if (executable is not null) return executable;
+
+        var shortcut = FindCurseForgeShortcut();
+        if (shortcut is not null) return shortcut;
+        if (IsCurseForgeProtocolRegistered()) return "curseforge://";
+
+        // Last resort for unusual standalone installations. Curse.Agent.Host is a
+        // background service and must never be launched as the desktop application.
+        foreach (var process in processes)
+        {
+            try
+            {
+                if (string.Equals(process.ProcessName, "Curse.Agent.Host", StringComparison.OrdinalIgnoreCase)) continue;
+                var path = process.MainModule?.FileName;
+                if (IsSupportedExecutable(path)) return path;
+            }
+            catch
+            {
+                // The process may exit while its executable path is inspected.
+            }
+        }
+        return null;
     }
 
     internal static bool IsSupportedLaunchTarget(string? path)
@@ -272,8 +307,12 @@ internal static class CurseForgeProcessService
         processName.Contains("CurseForge", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(processName, "Curse.Agent.Host", StringComparison.OrdinalIgnoreCase);
 
+    internal static bool IsBlockingMaintenanceProcessName(string processName) =>
+        IsMaintenanceProcessName(processName) &&
+        !string.Equals(processName, "Curse.Agent.Host", StringComparison.OrdinalIgnoreCase);
+
     internal static bool IsHostedCurseForgeWindow(string processName, string windowTitle) =>
-        !IsMaintenanceProcessName(processName) &&
+        processName.Contains("Overwolf", StringComparison.OrdinalIgnoreCase) &&
         windowTitle.Contains("CurseForge", StringComparison.OrdinalIgnoreCase);
 
     private static Process[] GetMaintenanceProcesses() =>
@@ -289,6 +328,12 @@ internal static class CurseForgeProcessService
     private static bool IsMaintenanceProcess(Process process)
     {
         try { return IsMaintenanceProcessName(process.ProcessName); }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    private static bool IsBlockingMaintenanceProcess(Process process)
+    {
+        try { return IsBlockingMaintenanceProcessName(process.ProcessName); }
         catch (InvalidOperationException) { return false; }
     }
 

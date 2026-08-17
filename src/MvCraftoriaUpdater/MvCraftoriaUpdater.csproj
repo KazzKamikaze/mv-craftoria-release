@@ -8,7 +8,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>MV Craftoria Updater</AssemblyName>
     <RootNamespace>MvCraftoriaUpdater</RootNamespace>
-    <Version>1.1.5</Version>
+    <Version>1.1.7</Version>
     <Authors>MV</Authors>
     <Product>MV Craftoria Updater</Product>
     <Description>Secure updater for the MV Craftoria Minecraft client.</Description>

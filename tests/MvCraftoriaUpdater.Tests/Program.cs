@@ -131,8 +131,14 @@ try
     Assert(CurseForgeProcessService.IsMaintenanceProcessName("CurseForge"), "CurseForge process detection");
     Assert(CurseForgeProcessService.IsMaintenanceProcessName("CurseForgeApp"), "alternate CurseForge process detection");
     Assert(CurseForgeProcessService.IsMaintenanceProcessName("Curse.Agent.Host"), "CurseForge agent process detection");
+    Assert(!CurseForgeProcessService.IsBlockingMaintenanceProcessName("Curse.Agent.Host"),
+        "respawned CurseForge agent does not abort maintenance");
+    Assert(CurseForgeProcessService.IsBlockingMaintenanceProcessName("CurseForge"),
+        "CurseForge desktop process blocks maintenance");
     Assert(!CurseForgeProcessService.IsMaintenanceProcessName("Overwolf"), "Overwolf process exclusion");
     Assert(CurseForgeProcessService.IsHostedCurseForgeWindow("Overwolf", "CurseForge"), "hosted CurseForge window detection");
+    Assert(!CurseForgeProcessService.IsHostedCurseForgeWindow("chrome", "CurseForge download page"),
+        "browser windows are never treated as hosted CurseForge");
     Assert(!CurseForgeProcessService.IsHostedCurseForgeWindow("Overwolf", "Overwolf"), "generic Overwolf window exclusion");
     var caseInsensitiveStatePath = Path.Combine(targetPath, ".mv-update", "state.json");
     File.WriteAllText(caseInsensitiveStatePath, "{\"Product\":\"MV Craftoria\",\"Version\":\"1.1.0\"}");
@@ -162,6 +168,13 @@ try
     File.WriteAllText(distantHorizonsConfig, "lodChunkRenderDistanceRadius = 321\nuserOwned = true\n");
     var distantHorizonsBeforeUpdate = File.ReadAllBytes(distantHorizonsConfig);
     var instanceDirectoriesBeforeUpdate = Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().ToArray();
+    var modsPath = Path.Combine(targetPath, "mods");
+    var conflictingJei = Path.Combine(modsPath, "jei-legacy.jar");
+    var conflictingTmrv = Path.Combine(modsPath, "toomanyrecipeviewers-legacy.jar");
+    var unrelatedPersonalMod = Path.Combine(modsPath, "personal-extra.jar");
+    CreateFakeModJar(conflictingJei, "jei");
+    CreateFakeModJar(conflictingTmrv, "toomanyrecipeviewers", "jei");
+    CreateFakeModJar(unrelatedPersonalMod, "personal_extra");
 
     var second = CreatePackage(root, "1.1.0", ["1.0.0"]);
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
@@ -190,6 +203,13 @@ try
     Assert(File.ReadAllText(Path.Combine(targetPath, "config", "version.txt")) == "1.1.0", "selected client update");
     Assert(File.ReadAllBytes(distantHorizonsConfig).SequenceEqual(distantHorizonsBeforeUpdate),
         "existing-client update preserves Distant Horizons config byte-for-byte");
+    Assert(!File.Exists(conflictingJei), "conflicting JEI provider removed");
+    Assert(!File.Exists(conflictingTmrv), "superseded TMRV version removed");
+    Assert(!File.Exists(Path.Combine(modsPath, "toomanyrecipeviewers-1.0.0.jar")),
+        "renamed previous managed mod removed");
+    Assert(File.Exists(Path.Combine(modsPath, "toomanyrecipeviewers-1.1.0.jar")),
+        "current managed mod installed");
+    Assert(File.Exists(unrelatedPersonalMod), "unrelated personal mod preserved");
 
     var instanceDirectoriesBeforeRepair = Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().ToArray();
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
@@ -245,6 +265,10 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(string root, string
     File.WriteAllText(Path.Combine(payload, "config", "version.txt"), version);
     File.WriteAllText(Path.Combine(payload, "config", "DistantHorizons.toml"),
         $"lodChunkRenderDistanceRadius = 128\nrelease = {version}\n");
+    CreateFakeModJar(
+        Path.Combine(payload, "mods", $"toomanyrecipeviewers-{version}.jar"),
+        "toomanyrecipeviewers",
+        "jei");
     var files = Directory.EnumerateFiles(payload, "*", SearchOption.AllDirectories).Select(path => new PatchFile
     {
         Path = Path.GetRelativePath(payload, path).Replace('\\', '/'),
@@ -282,6 +306,22 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(string root, string
         null,
         new Uri("https://test.invalid/release"),
         "test"));
+}
+
+static void CreateFakeModJar(string path, params string[] modIds)
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+    using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+    var metadata = archive.CreateEntry("META-INF/neoforge.mods.toml");
+    using var writer = new StreamWriter(metadata.Open(), new UTF8Encoding(false));
+    writer.WriteLine("modLoader = \"javafml\"");
+    writer.WriteLine("loaderVersion = \"[1,)\"");
+    foreach (var modId in modIds)
+    {
+        writer.WriteLine("[[mods]]");
+        writer.WriteLine($"modId = \"{modId}\"");
+        writer.WriteLine("version = \"1.0.0\"");
+    }
 }
 
 static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();

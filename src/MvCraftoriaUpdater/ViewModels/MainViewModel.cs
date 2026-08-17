@@ -270,6 +270,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         bool reinstall)
     {
         var installed = false;
+        var operationStage = "preparing CurseForge";
         CurseForgeRestartSession? maintenanceSession = null;
         operationCancellation = new CancellationTokenSource();
         OnPropertyChanged(nameof(CanCancel));
@@ -283,6 +284,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 ? "Preparing your new client"
                 : "CurseForge is closing and will be unavailable until the operation finishes";
             maintenanceSession = await CurseForgeProcessService.PrepareForMaintenanceAsync(cancellationToken);
+            operationStage = newClient ? "installing the new client" : "updating the selected client";
             installed = await InstallAsync(target, release, installedName, newClient, cancellationToken);
             if (!installed)
             {
@@ -303,6 +305,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
             if (newClient)
             {
+                operationStage = "registering the new client in CurseForge";
                 StatusTitle = "Finishing installation";
                 StatusDetail = "Registering the client with CurseForge";
                 var registered = await locator.WaitForRegisteredProfileAsync(
@@ -351,11 +354,12 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 WorkDirectoryCleaner.DeleteDirectory(target.Path, "incomplete new client");
             }
             StatusTitle = newClient ? "Client installation failed" : "Update was not installed";
-            StatusDetail = FriendlyError(exception);
+            StatusDetail = FailureDetail(operationStage, exception);
             Progress = 0;
-            AppLog.Error(newClient ? "Background client installation failed" : "CurseForge maintenance preparation failed", exception);
+            AppLog.Error($"Failed while {operationStage}: {target.Path}", exception);
             ShowMessage?.Invoke(
-                StatusDetail + "\n\nTemporary downloads and incomplete client files were removed.",
+                StatusDetail + "\n\nTemporary downloads and incomplete client files were removed. " +
+                "Use Open Logs if this error needs to be reported.",
                 newClient ? "Installation failed" : "Update failed");
         }
         finally
@@ -521,6 +525,12 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     {
         HttpRequestException => "GitHub could not be reached. Check your connection and try again.",
         CryptographicException => "A release failed signature or checksum verification and was rejected.",
-        _ => exception.Message
+        _ => string.IsNullOrWhiteSpace(exception.Message)
+            ? $"{exception.GetType().Name} occurred without an error message."
+            : exception.Message
     };
+
+    private static string FailureDetail(string stage, Exception exception) =>
+        $"The updater failed while {stage}.\n\n{FriendlyError(exception)}\n\n" +
+        $"Diagnostic type: {exception.GetType().Name}";
 }

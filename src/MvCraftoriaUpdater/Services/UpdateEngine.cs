@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using MvCraftoriaUpdater.Models;
 
 namespace MvCraftoriaUpdater.Services;
@@ -191,6 +192,8 @@ internal sealed class UpdateEngine
                     relative));
             }
 
+            ReconcileModJars(profile.Path, patch, stagedPayload, backupRoot, touched);
+
             foreach (var deletePath in patch.Delete)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -315,6 +318,92 @@ internal sealed class UpdateEngine
                 AppLog.Error($"Rollback failed for {file.Destination}", exception);
             }
         }
+    }
+
+    private static void ReconcileModJars(
+        string profilePath,
+        PatchManifest patch,
+        string stagedPayload,
+        string backupRoot,
+        List<TouchedFile> touched)
+    {
+        var managedJars = patch.Files
+            .Select(file => NormalizeRelativePath(file.Path))
+            .Where(IsModJar)
+            .ToArray();
+        if (managedJars.Length == 0) return;
+
+        var managedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var managedModIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var relative in managedJars)
+        {
+            managedPaths.Add(Path.GetFullPath(ResolveSafeChild(profilePath, relative)));
+            foreach (var modId in ReadModIds(ResolveSafeChild(stagedPayload, relative)))
+            {
+                managedModIds.Add(modId);
+            }
+        }
+        if (managedModIds.Count == 0) return;
+
+        var modsDirectory = Path.Combine(profilePath, "mods");
+        if (!Directory.Exists(modsDirectory)) return;
+        foreach (var existing in Directory.EnumerateFiles(modsDirectory, "*.jar", SearchOption.TopDirectoryOnly))
+        {
+            var fullPath = Path.GetFullPath(existing);
+            if (managedPaths.Contains(fullPath)) continue;
+
+            var overlap = ReadModIds(fullPath)
+                .Where(managedModIds.Contains)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (overlap.Length == 0) continue;
+
+            var relative = Path.GetRelativePath(profilePath, fullPath).Replace('\\', '/');
+            Backup(fullPath, backupRoot, relative, touched);
+            File.Delete(fullPath);
+            AppLog.Info(
+                $"Removed superseded mod {Path.GetFileName(fullPath)}; replacement provides: {string.Join(", ", overlap)}");
+        }
+    }
+
+    private static bool IsModJar(string relative)
+    {
+        var normalized = relative.Replace('\\', '/');
+        return normalized.StartsWith("mods/", StringComparison.OrdinalIgnoreCase) &&
+               normalized.Count(character => character == '/') == 1 &&
+               normalized.EndsWith(".jar", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlySet<string> ReadModIds(string jarPath)
+    {
+        var modIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var archive = ZipFile.OpenRead(jarPath);
+            var metadata = archive.Entries.FirstOrDefault(entry =>
+                string.Equals(entry.FullName, "META-INF/neoforge.mods.toml", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(entry.FullName, "META-INF/mods.toml", StringComparison.OrdinalIgnoreCase));
+            if (metadata is null) return modIds;
+
+            using var reader = new StreamReader(metadata.Open(), Encoding.UTF8, true);
+            var text = reader.ReadToEnd();
+            foreach (Match section in Regex.Matches(
+                         text,
+                         @"(?ms)^\s*\[\[mods\]\]\s*(?<body>.*?)(?=^\s*\[|\z)",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                var id = Regex.Match(
+                    section.Groups["body"].Value,
+                    @"(?m)^\s*modId\s*=\s*[""'](?<id>[a-z0-9_.-]+)[""']",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                if (id.Success) modIds.Add(id.Groups["id"].Value);
+            }
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            AppLog.Error($"Could not inspect mod metadata: {jarPath}", exception);
+        }
+        return modIds;
     }
 
     private static void TryDeleteTemporaryFile(string path)
