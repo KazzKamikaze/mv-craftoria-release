@@ -172,11 +172,19 @@ try
     var conflictingJei = Path.Combine(modsPath, "jei-legacy.jar");
     var conflictingTmrv = Path.Combine(modsPath, "toomanyrecipeviewers-legacy.jar");
     var unrelatedPersonalMod = Path.Combine(modsPath, "personal-extra.jar");
+    var removedChatToggle = Path.Combine(modsPath, "chattoggle-legacy.jar");
+    var removedChatToggleConfig = Path.Combine(targetPath, "config", "chattoggle.json");
     CreateFakeModJar(conflictingJei, "jei");
     CreateFakeModJar(conflictingTmrv, "toomanyrecipeviewers", "jei");
     CreateFakeModJar(unrelatedPersonalMod, "personal_extra");
+    CreateFakeModJar(removedChatToggle, "chattoggle");
+    File.WriteAllText(removedChatToggleConfig, "{\"on\":true}");
 
-    var second = CreatePackage(root, "1.1.0", ["1.0.0"]);
+    var second = CreatePackage(
+        root,
+        "1.1.0",
+        ["1.0.0"],
+        ["mods/chattoggle-legacy.jar", "config/chattoggle.json"]);
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
     {
         var target = new CurseForgeProfile("MV Craftoria 1.0.0", targetPath, "1.0.0", "1.21.1");
@@ -210,6 +218,8 @@ try
     Assert(File.Exists(Path.Combine(modsPath, "toomanyrecipeviewers-1.1.0.jar")),
         "current managed mod installed");
     Assert(File.Exists(unrelatedPersonalMod), "unrelated personal mod preserved");
+    Assert(!File.Exists(removedChatToggle), "explicitly removed mod deleted");
+    Assert(!File.Exists(removedChatToggleConfig), "explicitly removed mod config deleted");
 
     var instanceDirectoriesBeforeRepair = Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().ToArray();
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
@@ -243,7 +253,11 @@ finally
     if (Directory.Exists(root)) Directory.Delete(root, true);
 }
 
-static (byte[] Bytes, VerifiedRelease Release) CreatePackage(string root, string version, string[] supportedFrom)
+static (byte[] Bytes, VerifiedRelease Release) CreatePackage(
+    string root,
+    string version,
+    string[] supportedFrom,
+    string[]? delete = null)
 {
     var build = Path.Combine(root, "build-" + Guid.NewGuid().ToString("N"));
     var payload = Path.Combine(build, "payload");
@@ -281,7 +295,8 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(string root, string
         Product = "MV Craftoria",
         TargetVersion = version,
         SupportedFrom = supportedFrom,
-        Files = files
+        Files = files,
+        Delete = delete ?? []
     };
     File.WriteAllText(Path.Combine(build, "mv-patch.json"), JsonSerializer.Serialize(patch, JsonDefaults.Options), new UTF8Encoding(false));
     var zipPath = Path.Combine(root, $"MV-Craftoria-{version}.zip");
