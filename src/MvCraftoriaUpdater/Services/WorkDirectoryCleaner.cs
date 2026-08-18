@@ -9,12 +9,17 @@ internal static class WorkDirectoryCleaner
         "MV Craftoria Updater",
         "work");
 
-    internal static void CleanupAbandonedSessions()
+    internal static void CleanupAbandonedSessions(string? excludedDirectory = null)
     {
         if (!Directory.Exists(WorkRoot)) return;
 
         foreach (var directory in Directory.EnumerateDirectories(WorkRoot))
         {
+            if (excludedDirectory is not null &&
+                string.Equals(Path.GetFullPath(directory), Path.GetFullPath(excludedDirectory), StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
             DeleteDirectory(directory, "abandoned updater download");
         }
 

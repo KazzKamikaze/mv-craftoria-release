@@ -23,6 +23,8 @@ public sealed class ReleaseManifest
     public string[] SupportedFrom { get; init; } = [];
     public ReleasePackage Package { get; init; } = new();
     public ReleasePackage? ImportPackage { get; init; }
+    public string UpdaterVersion { get; init; } = "";
+    public ReleasePackage? UpdaterPackage { get; init; }
 }
 
 public sealed class ReleasePackage
@@ -40,6 +42,7 @@ public sealed class PatchManifest
     public string[] SupportedFrom { get; init; } = [];
     public PatchFile[] Files { get; init; } = [];
     public string[] Delete { get; init; } = [];
+    public string[] ExactDirectories { get; init; } = [];
 }
 
 public sealed class PatchFile
@@ -78,6 +81,7 @@ public sealed record VerifiedRelease(
     ReleaseManifest Manifest,
     Uri PackageUri,
     Uri? ImportPackageUri,
+    Uri? UpdaterPackageUri,
     Uri ReleasePageUri,
     string ManifestSha256)
 {

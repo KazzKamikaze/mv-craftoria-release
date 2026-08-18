@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Reflection;
 using MvCraftoriaUpdater.Models;
 
 namespace MvCraftoriaUpdater.Services;
@@ -17,7 +18,9 @@ internal sealed partial class GitHubReleaseClient : IDisposable
         this.configuration = configuration;
         httpClient = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
         httpClient.Timeout = TimeSpan.FromMinutes(5);
-        httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("MV-Craftoria-Updater", "1.0.0"));
+        httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue(
+            "MV-Craftoria-Updater",
+            Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0"));
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         httpClient.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
     }
@@ -102,10 +105,22 @@ internal sealed partial class GitHubReleaseClient : IDisposable
             importPackageUri = new Uri(importAsset.BrowserDownloadUrl);
         }
 
+        Uri? updaterPackageUri = null;
+        if (manifest.UpdaterPackage is not null)
+        {
+            var updaterAsset = FindAsset(release, manifest.UpdaterPackage.AssetName);
+            if (manifest.UpdaterPackage.Size > 0 && updaterAsset.Size != manifest.UpdaterPackage.Size)
+            {
+                throw new InvalidDataException("The GitHub updater size does not match the signed manifest.");
+            }
+            updaterPackageUri = new Uri(updaterAsset.BrowserDownloadUrl);
+        }
+
         return new VerifiedRelease(
             manifest,
             new Uri(packageAsset.BrowserDownloadUrl),
             importPackageUri,
+            updaterPackageUri,
             new Uri(release.HtmlUrl),
             Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant());
     }
@@ -136,6 +151,32 @@ internal sealed partial class GitHubReleaseClient : IDisposable
         var uri = release.ImportPackageUri
             ?? throw new InvalidOperationException("The CurseForge import package URL is unavailable.");
         await DownloadAssetAsync(uri, package, destination, "Downloading client installer", progress, cancellationToken);
+    }
+
+    internal async Task DownloadUpdaterAsync(
+        VerifiedRelease release,
+        string destination,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var package = release.Manifest.UpdaterPackage
+            ?? throw new InvalidOperationException("This release does not provide an updater package.");
+        var uri = release.UpdaterPackageUri
+            ?? throw new InvalidOperationException("The updater package URL is unavailable.");
+        await DownloadAssetAsync(uri, package, destination, "Downloading updater", progress, cancellationToken);
+
+        var file = new FileInfo(destination);
+        if (!file.Exists || (package.Size > 0 && file.Length != package.Size))
+        {
+            throw new CryptographicException("The downloaded updater size is invalid.");
+        }
+        await using var stream = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 128, true);
+        var hash = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
+        if (!string.Equals(hash, package.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CryptographicException("The downloaded updater checksum is invalid.");
+        }
+        progress?.Report(new UpdateProgress(85, "Verifying updater", "Signed updater package verified"));
     }
 
     private async Task DownloadAssetAsync(
@@ -175,7 +216,7 @@ internal sealed partial class GitHubReleaseClient : IDisposable
 
     private void ValidateManifest(ReleaseManifest manifest)
     {
-        if (manifest.SchemaVersion != 1) throw new InvalidDataException("Unsupported release manifest version.");
+        if (manifest.SchemaVersion is not (1 or 2)) throw new InvalidDataException("Unsupported release manifest version.");
         if (!string.Equals(manifest.Product, configuration.ProductName, StringComparison.Ordinal))
         {
             throw new InvalidDataException("The signed release belongs to a different product.");
@@ -194,7 +235,17 @@ internal sealed partial class GitHubReleaseClient : IDisposable
         {
             throw new InvalidDataException("The signed CurseForge import package metadata is invalid.");
         }
-        VersionPolicy.EnsureUpdaterVersionSupported(manifest.MinimumUpdaterVersion);
+        if (manifest.UpdaterPackage is null != string.IsNullOrWhiteSpace(manifest.UpdaterVersion))
+        {
+            throw new InvalidDataException("The signed updater metadata is incomplete.");
+        }
+        if (manifest.UpdaterPackage is not null &&
+            (string.IsNullOrWhiteSpace(manifest.UpdaterPackage.AssetName) ||
+             !Sha256Pattern().IsMatch(manifest.UpdaterPackage.Sha256)))
+        {
+            throw new InvalidDataException("The signed updater package metadata is invalid.");
+        }
+        _ = VersionPolicy.IsRunningUpdaterSupported(manifest.MinimumUpdaterVersion);
     }
 
     private static string FormatBytes(long received, long total)

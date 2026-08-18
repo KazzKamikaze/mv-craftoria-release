@@ -23,8 +23,29 @@ public partial class MainWindow : Window
         viewModel.BrowseRequested += BrowseForProfile;
         viewModel.BrowseInstancesRequested += BrowseForInstances;
         DataContext = viewModel;
-        Loaded += async (_, _) => await viewModel.InitializeAsync();
+        Loaded += OnLoaded;
         Closed += (_, _) => viewModel.Dispose();
+    }
+
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        await viewModel.InitializeAsync();
+        if (Application.Current is not App { SelfUpdateCompleted: true } app) return;
+
+        if (app.SelfUpdateSucceeded)
+        {
+            UpdaterDialog.ShowInformation(
+                this,
+                "Updater update complete",
+                $"MV Craftoria Updater {VersionPolicy.RunningUpdaterVersion} is installed and ready.");
+        }
+        else
+        {
+            UpdaterDialog.ShowInformation(
+                this,
+                "Updater update failed",
+                "The updater could not replace itself. The existing executable was reopened and temporary files are being removed. Open Logs for details.");
+        }
     }
 
     private void BrowseForProfile(object? sender, EventArgs e)

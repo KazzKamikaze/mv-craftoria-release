@@ -60,9 +60,9 @@ internal static class CurseForgeProcessService
             }
             Dispose(remaining);
 
-            // Overwolf hosts the CurseForge window inside an Overwolf process. Closing
-            // the window is normally enough, but some installations ignore WM_CLOSE.
-            // Kill only that hosted window process, never the complete Overwolf tree.
+            // Some Overwolf installations expose the CurseForge window through a
+            // separate host process. Clean up any remaining hosted window after the
+            // normal CurseForge and Overwolf maintenance processes have exited.
             var remainingHostedWindows = GetHostedCurseForgeWindows();
             foreach (var process in remainingHostedWindows)
             {
@@ -305,7 +305,8 @@ internal static class CurseForgeProcessService
 
     internal static bool IsMaintenanceProcessName(string processName) =>
         processName.Contains("CurseForge", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(processName, "Curse.Agent.Host", StringComparison.OrdinalIgnoreCase);
+        string.Equals(processName, "Curse.Agent.Host", StringComparison.OrdinalIgnoreCase) ||
+        processName.Contains("Overwolf", StringComparison.OrdinalIgnoreCase);
 
     internal static bool IsBlockingMaintenanceProcessName(string processName) =>
         IsMaintenanceProcessName(processName) &&

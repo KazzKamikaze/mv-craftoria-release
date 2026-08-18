@@ -8,6 +8,7 @@ param(
     [string] $Summary = 'A new MV Craftoria client release is available.',
     [string[]] $Changelog = @('Client files updated.'),
     [string[]] $Delete = @(),
+    [string] $UpdaterPath,
     [string] $PrivateKeyPath = "$env:USERPROFILE\.mv-craftoria\keys\release-private.pem"
 )
 
@@ -23,6 +24,35 @@ if (-not (Test-Path -LiteralPath (Join-Path $source 'minecraftinstance.json') -P
 }
 if (-not (Test-Path -LiteralPath $privateKey -PathType Leaf)) { throw "Private signing key not found: $privateKey" }
 New-Item -ItemType Directory -Force -Path $output | Out-Null
+$updaterPackage = $null
+$updaterVersion = ''
+if (-not [string]::IsNullOrWhiteSpace($UpdaterPath)) {
+    $resolvedUpdater = [IO.Path]::GetFullPath($UpdaterPath)
+    if (-not (Test-Path -LiteralPath $resolvedUpdater -PathType Leaf)) {
+        throw "Updater executable not found: $resolvedUpdater"
+    }
+    $updaterAssetPath = Join-Path $output 'MV-Craftoria-Updater.exe'
+    if (-not [IO.Path]::GetFullPath($resolvedUpdater).Equals(
+            [IO.Path]::GetFullPath($updaterAssetPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -LiteralPath $resolvedUpdater -Destination $updaterAssetPath -Force
+    }
+    $updaterInfo = Get-Item -LiteralPath $updaterAssetPath
+    $rawUpdaterVersion = $updaterInfo.VersionInfo.ProductVersion
+    if ([string]::IsNullOrWhiteSpace($rawUpdaterVersion)) {
+        throw 'The updater executable does not contain a product version.'
+    }
+    $updaterVersionMatch = [regex]::Match($rawUpdaterVersion, '^\d+\.\d+\.\d+')
+    if (-not $updaterVersionMatch.Success) {
+        throw "The updater executable version is invalid: $rawUpdaterVersion"
+    }
+    $updaterVersion = $updaterVersionMatch.Value
+    $updaterPackage = [ordered]@{
+        assetName = $updaterInfo.Name
+        sha256 = (Get-FileHash -LiteralPath $updaterAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        size = $updaterInfo.Length
+    }
+}
 $instance = Get-Content -LiteralPath (Join-Path $source 'minecraftinstance.json') -Raw | ConvertFrom-Json
 if (-not $instance.manifest -or -not $instance.manifest.files) {
     throw 'minecraftinstance.json does not contain a CurseForge export manifest.'
@@ -116,12 +146,13 @@ try {
         $utf8)
 
     $patch = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         product = 'MV Craftoria'
         targetVersion = $Version
         supportedFrom = @($SupportedFrom)
         files = @($files)
         delete = @($Delete)
+        exactDirectories = @('mods')
     }
     [IO.File]::WriteAllText((Join-Path $session 'mv-patch.json'), ($patch | ConvertTo-Json -Depth 8), $utf8)
 
@@ -144,11 +175,11 @@ try {
     Compress-Archive -Path (Join-Path $importRoot '*') -DestinationPath $importPackagePath -CompressionLevel Optimal -Force
     $importPackageInfo = Get-Item -LiteralPath $importPackagePath
     $release = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = if ($null -ne $updaterPackage) { 2 } else { 1 }
         product = 'MV Craftoria'
         version = $Version
         publishedUtc = [DateTimeOffset]::UtcNow.ToString('O')
-        minimumUpdaterVersion = '1.0.0'
+        minimumUpdaterVersion = '1.1.0'
         summary = $Summary
         changelog = @($Changelog)
         supportedFrom = @($SupportedFrom)
@@ -162,6 +193,10 @@ try {
             sha256 = (Get-FileHash -LiteralPath $importPackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
             size = $importPackageInfo.Length
         }
+    }
+    if ($null -ne $updaterPackage) {
+        $release.updaterVersion = $updaterVersion
+        $release.updaterPackage = $updaterPackage
     }
     $manifestPath = Join-Path $output 'mv-release.json'
     [IO.File]::WriteAllText($manifestPath, ($release | ConvertTo-Json -Depth 8), $utf8)

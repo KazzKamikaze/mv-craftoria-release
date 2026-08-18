@@ -15,6 +15,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private readonly UpdateEngine updateEngine;
     private CurseForgeProfile? selectedProfile;
     private VerifiedRelease? selectedRelease;
+    private VerifiedRelease? updaterRelease;
     private CancellationTokenSource? operationCancellation;
     private string currentVersion = "Not selected";
     private string selectedVersion = "Not checked";
@@ -24,6 +25,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private string profileStatus = "CLIENT PROFILE";
     private double progress;
     private bool isBusy;
+    private bool updaterUpdateAvailable;
+    private string updaterNotice = "UPDATER CURRENT";
 
     internal MainViewModel(UpdaterConfiguration configuration)
     {
@@ -33,6 +36,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         CheckCommand = new AsyncRelayCommand(CheckForUpdatesAsync, () => !IsBusy);
         UpdateCommand = new AsyncRelayCommand(UpdateSelectedClientAsync, CanUpdateSelected);
         InstallNewCommand = new AsyncRelayCommand(InstallAsNewClientAsync, CanInstallNew);
+        UpdateUpdaterCommand = new AsyncRelayCommand(UpdateUpdaterAsync, CanUpdateUpdater);
         CancelCommand = new RelayCommand(CancelOperation, () => CanCancel);
         BrowseCommand = new RelayCommand(() => BrowseRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
         BrowseCurseForgeCommand = new RelayCommand(() => BrowseInstancesRequested?.Invoke(this, EventArgs.Empty), () => !IsBusy);
@@ -51,6 +55,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand CheckCommand { get; }
     public AsyncRelayCommand UpdateCommand { get; }
     public AsyncRelayCommand InstallNewCommand { get; }
+    public AsyncRelayCommand UpdateUpdaterCommand { get; }
     public RelayCommand CancelCommand { get; }
     public RelayCommand BrowseCommand { get; }
     public RelayCommand BrowseCurseForgeCommand { get; }
@@ -93,12 +98,19 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     public string StatusDetail { get => statusDetail; private set => SetProperty(ref statusDetail, value); }
     public string SecurityStatus { get => securityStatus; private set => SetProperty(ref securityStatus, value); }
     public string ProfileStatus { get => profileStatus; private set => SetProperty(ref profileStatus, value); }
+    public string RunningUpdaterVersion => VersionPolicy.RunningUpdaterVersion;
+    public string UpdaterNotice { get => updaterNotice; private set => SetProperty(ref updaterNotice, value); }
+    public bool UpdaterUpdateAvailable
+    {
+        get => updaterUpdateAvailable;
+        private set => SetProperty(ref updaterUpdateAvailable, value);
+    }
     public double Progress { get => progress; private set => SetProperty(ref progress, value); }
     public bool CanCancel => IsBusy && operationCancellation is not null;
     public string UpdateActionText =>
         SelectedProfile is not null && SelectedRelease is not null &&
         VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version)
-            ? "Reinstall Current Version"
+            ? "Repair Selected Client"
             : "Update Selected Client";
 
     public bool IsBusy
@@ -187,6 +199,11 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             var verified = await releaseClient.GetVerifiedReleasesAsync(CancellationToken.None);
             Releases.Clear();
             foreach (var release in verified) Releases.Add(release);
+            updaterRelease = FindNewestUpdaterRelease(verified);
+            UpdaterUpdateAvailable = updaterRelease is not null;
+            UpdaterNotice = updaterRelease is null
+                ? $"UPDATER {VersionPolicy.Display(VersionPolicy.RunningUpdaterVersion)}"
+                : $"UPDATER {VersionPolicy.Display(updaterRelease.Manifest.UpdaterVersion)} AVAILABLE";
             SelectedRelease = Releases.FirstOrDefault(item =>
                 VersionPolicy.IsSame(item.Manifest.Version, previousVersion ?? "")) ?? Releases.FirstOrDefault();
             SecurityStatus = $"{Releases.Count} SIGNED VERSION{(Releases.Count == 1 ? "" : "S")} VERIFIED";
@@ -198,6 +215,9 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         {
             Releases.Clear();
             SelectedRelease = null;
+            updaterRelease = null;
+            UpdaterUpdateAvailable = false;
+            UpdaterNotice = "UPDATER CHECK FAILED";
             SecurityStatus = "UPDATE CHECK FAILED";
             StatusTitle = "Could not load modpack versions";
             StatusDetail = FriendlyError(exception);
@@ -219,16 +239,18 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         var prompt = reinstall
             ? $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} is already up to date on " +
               $"{VersionPolicy.Display(SelectedRelease.Manifest.Version)}.\n\n" +
-              "Do you want to reinstall this update as a repair? Managed modpack files will be verified and reapplied. " +
+              "Do you want to repair this client against the signed release? Every managed file will be checksum-verified and reapplied. " +
+              "Extra mod JARs, including versions left by CurseForge's Update All, will be quarantined in the rollback backup. " +
               "Personal settings, worlds, screenshots, map data, and the existing CurseForge profile identity will remain untouched. " +
-              "CurseForge must close during the repair and will remain closed when it is finished."
+              "CurseForge and Overwolf must close during the repair and will remain closed when it is finished."
             : $"{VersionPolicy.DisplayProfileName(SelectedProfile.Name)} will be updated from " +
               $"{VersionPolicy.Display(SelectedProfile.Version)} to {VersionPolicy.Display(SelectedRelease.Manifest.Version)} " +
               "in its existing profile.\n\n" +
+              "The complete managed mod inventory will be checksum-verified, and extra mod JARs will be quarantined in the rollback backup. " +
               "Personal settings, worlds, screenshots, map data, profile name, and profile identity will remain untouched. " +
-              "CurseForge must close during the update and will remain closed when it is finished.";
+              "CurseForge and Overwolf must close during the update and will remain closed when it is finished.";
         var title = reinstall ? "Reinstall current version?" : "Confirm client update";
-        var action = reinstall ? "Reinstall Update" : "Update Client";
+        var action = reinstall ? "Repair Client" : "Update Client";
         if (ConfirmInstall?.Invoke(title, prompt, action) != true) return;
         await InstallWithCurseForgeRestartAsync(
             SelectedProfile,
@@ -236,6 +258,73 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             retainedName,
             false,
             reinstall);
+    }
+
+    private async Task UpdateUpdaterAsync()
+    {
+        if (updaterRelease is null) return;
+        var version = VersionPolicy.Display(updaterRelease.Manifest.UpdaterVersion);
+        var prompt = $"MV Craftoria Updater {version} is available.\n\n" +
+                     "The replacement executable is covered by the signed release manifest and will be checked for its exact size and SHA-256 checksum before anything changes. " +
+                     "The updater will close, replace itself, reopen automatically, and remove its temporary files.";
+        if (ConfirmInstall?.Invoke("Update MV Craftoria Updater?", prompt, "Update Updater") != true) return;
+
+        operationCancellation = new CancellationTokenSource();
+        OnPropertyChanged(nameof(CanCancel));
+        var cancellationToken = operationCancellation.Token;
+        var session = Path.Combine(WorkDirectoryCleaner.WorkRoot, "self-update-" + Guid.NewGuid().ToString("N"));
+        var downloadedUpdater = Path.Combine(session, "MV-Craftoria-Updater.verified.exe");
+        Directory.CreateDirectory(session);
+        IsBusy = true;
+        try
+        {
+            StatusTitle = "Updating the updater";
+            StatusDetail = $"Downloading and verifying updater {version}";
+            Progress = 5;
+            var progressReporter = new Progress<UpdateProgress>(value =>
+            {
+                Progress = value.Percentage;
+                StatusTitle = value.Stage;
+                StatusDetail = value.Detail;
+            });
+            await releaseClient.DownloadUpdaterAsync(
+                updaterRelease,
+                downloadedUpdater,
+                progressReporter,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            StatusTitle = "Installing updater";
+            StatusDetail = "The application will reopen automatically";
+            Progress = 100;
+            SelfUpdateService.BeginReplacement(downloadedUpdater, session);
+            System.Windows.Application.Current.Shutdown();
+        }
+        catch (OperationCanceledException)
+        {
+            WorkDirectoryCleaner.DeleteDirectory(session, "cancelled updater self-update");
+            StatusTitle = "Updater update cancelled";
+            StatusDetail = "The downloaded replacement was removed.";
+            Progress = 0;
+        }
+        catch (Exception exception)
+        {
+            WorkDirectoryCleaner.DeleteDirectory(session, "failed updater self-update");
+            StatusTitle = "Updater update failed";
+            StatusDetail = FriendlyError(exception);
+            Progress = 0;
+            AppLog.Error("Updater self-update failed", exception);
+            ShowMessage?.Invoke(
+                StatusDetail + "\n\nThe current updater was not changed and temporary files were removed.",
+                "Updater update failed");
+        }
+        finally
+        {
+            operationCancellation?.Dispose();
+            operationCancellation = null;
+            IsBusy = false;
+            OnPropertyChanged(nameof(CanCancel));
+            RefreshCommandStates();
+        }
     }
 
     private async Task InstallAsNewClientAsync()
@@ -256,7 +345,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         var prompt = "This does NOT update your selected client. It creates a completely separate CurseForge profile.\n\n" +
                      $"A new CurseForge client named '{profileName}' will be installed with version " +
                      $"{VersionPolicy.Display(SelectedRelease.Manifest.Version)}.\n\n" +
-                     "Your existing clients will not be changed. CurseForge must close during installation and will " +
+                     "Your existing clients will not be changed. CurseForge and Overwolf must close during installation and CurseForge will " +
                      "reopen automatically when the new client is ready.";
         if (ConfirmInstall?.Invoke("Create a separate client?", prompt, "Create Separate Client") != true) return;
         await InstallWithCurseForgeRestartAsync(target, SelectedRelease, profileName, true, false);
@@ -282,7 +371,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             StatusTitle = newClient ? "Installing MV Craftoria" : "Preparing CurseForge";
             StatusDetail = newClient
                 ? "Preparing your new client"
-                : "CurseForge is closing and will be unavailable until the operation finishes";
+                : "CurseForge and Overwolf are closing and will be unavailable until the operation finishes";
             maintenanceSession = await CurseForgeProcessService.PrepareForMaintenanceAsync(cancellationToken);
             operationStage = newClient ? "installing the new client" : "updating the selected client";
             installed = await InstallAsync(target, release, installedName, newClient, cancellationToken);
@@ -332,7 +421,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                     $"{VersionPolicy.DisplayProfileName(target.Name)} was " +
                     $"{(reinstall ? "repaired successfully on" : "updated successfully to")} " +
                     $"{VersionPolicy.Display(release.Manifest.Version)}.\n\n" +
-                    "The original CurseForge profile was retained. Open CurseForge manually when you are ready to play.",
+                    "All managed files and mod versions passed integrity verification. The original CurseForge profile was retained. " +
+                    "Open CurseForge manually when you are ready to play.",
                     reinstall ? "Repair complete" : "Update complete");
             }
         }
@@ -390,7 +480,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             else
             {
                 StatusTitle = value.Stage;
-                StatusDetail = $"CurseForge is temporarily unavailable. {value.Detail}";
+                StatusDetail = $"CurseForge and Overwolf are temporarily unavailable. {value.Detail}";
             }
         });
         try
@@ -453,6 +543,13 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             RefreshCommandStates();
             return;
         }
+        if (!VersionPolicy.IsRunningUpdaterSupported(SelectedRelease.Manifest.MinimumUpdaterVersion))
+        {
+            StatusTitle = "Updater update required";
+            StatusDetail = $"Install MV Craftoria Updater {SelectedRelease.Manifest.MinimumUpdaterVersion} or newer before installing this client release.";
+            RefreshCommandStates();
+            return;
+        }
         if (SelectedProfile is null)
         {
             StatusTitle = $"Version {VersionPolicy.Display(SelectedRelease.Manifest.Version)} is ready";
@@ -479,11 +576,13 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
     private bool CanUpdateSelected() =>
         !IsBusy && SelectedProfile is not null && SelectedRelease is not null &&
+        VersionPolicy.IsRunningUpdaterSupported(SelectedRelease.Manifest.MinimumUpdaterVersion) &&
         (VersionPolicy.IsSame(SelectedProfile.Version, SelectedRelease.Manifest.Version) ||
          SelectedRelease.Manifest.SupportedFrom.Contains(SelectedProfile.Version, StringComparer.OrdinalIgnoreCase));
 
     private bool CanInstallNew() =>
         !IsBusy && SelectedRelease is not null &&
+        VersionPolicy.IsRunningUpdaterSupported(SelectedRelease.Manifest.MinimumUpdaterVersion) &&
         SelectedRelease.Manifest.SupportedFrom.Contains(NotInstalledVersion, StringComparer.OrdinalIgnoreCase) &&
         locator.FindPreferredInstanceRoot() is not null;
 
@@ -492,10 +591,31 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         CheckCommand.RaiseCanExecuteChanged();
         UpdateCommand.RaiseCanExecuteChanged();
         InstallNewCommand.RaiseCanExecuteChanged();
+        UpdateUpdaterCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
         BrowseCommand.RaiseCanExecuteChanged();
         BrowseCurseForgeCommand.RaiseCanExecuteChanged();
         OpenReleaseCommand.RaiseCanExecuteChanged();
+    }
+
+    private bool CanUpdateUpdater() => !IsBusy && updaterRelease is not null;
+
+    private static VerifiedRelease? FindNewestUpdaterRelease(IEnumerable<VerifiedRelease> releases)
+    {
+        VerifiedRelease? newest = null;
+        foreach (var release in releases.Where(item =>
+                     item.Manifest.UpdaterPackage is not null &&
+                     item.UpdaterPackageUri is not null &&
+                     !string.IsNullOrWhiteSpace(item.Manifest.UpdaterVersion) &&
+                     VersionPolicy.IsNewerThanRunning(item.Manifest.UpdaterVersion)))
+        {
+            if (newest is null ||
+                VersionPolicy.Compare(release.Manifest.UpdaterVersion, newest.Manifest.UpdaterVersion) > 0)
+            {
+                newest = release;
+            }
+        }
+        return newest;
     }
 
     private void CancelOperation()

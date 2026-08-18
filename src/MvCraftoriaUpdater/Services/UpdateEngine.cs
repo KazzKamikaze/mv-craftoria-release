@@ -99,7 +99,7 @@ internal sealed class UpdateEngine
                 ?? throw new InvalidDataException("The patch manifest is empty.");
         }
 
-        if (patch.SchemaVersion != 1 ||
+        if (patch.SchemaVersion is < 1 or > 2 ||
             !string.Equals(patch.Product, configuration.ProductName, StringComparison.Ordinal) ||
             !string.Equals(patch.TargetVersion, release.Manifest.Version, StringComparison.Ordinal))
         {
@@ -109,6 +109,8 @@ internal sealed class UpdateEngine
         {
             throw new InvalidDataException("The patch compatibility list does not match the signed release.");
         }
+
+        ValidatePatchInventory(patch);
 
         Directory.CreateDirectory(stagedPayload);
         for (var index = 0; index < patch.Files.Length; index++)
@@ -192,8 +194,6 @@ internal sealed class UpdateEngine
                     relative));
             }
 
-            ReconcileModJars(profile.Path, patch, stagedPayload, backupRoot, touched);
-
             foreach (var deletePath in patch.Delete)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -206,9 +206,26 @@ internal sealed class UpdateEngine
                 File.Delete(destination);
             }
 
+            if (patch.SchemaVersion >= 2)
+            {
+                var removed = ReconcileExactDirectories(profile.Path, patch, backupRoot, touched, cancellationToken);
+                progress?.Report(new UpdateProgress(
+                    97,
+                    "Repairing file integrity",
+                    removed == 0
+                        ? "Managed mod inventory already clean"
+                        : $"Quarantined {removed} unexpected managed file(s)"));
+            }
+            else
+            {
+                ReconcileModJars(profile.Path, patch, stagedPayload, backupRoot, touched);
+            }
+
             // Existing profiles keep minecraftinstance.json byte-for-byte. Editing
             // CurseForge identity metadata can make its agent register a duplicate.
             if (freshInstall) RewriteProfileIdentity(profile.Path, installedProfileName, true, null);
+
+            VerifyInstalledFiles(profile.Path, patch, progress, cancellationToken);
 
             var state = new InstalledState
             {
@@ -366,6 +383,146 @@ internal sealed class UpdateEngine
         }
     }
 
+    private static int ReconcileExactDirectories(
+        string profilePath,
+        PatchManifest patch,
+        string backupRoot,
+        List<TouchedFile> touched,
+        CancellationToken cancellationToken)
+    {
+        var expectedPaths = patch.Files
+            .Select(file => Path.GetFullPath(ResolveSafeChild(profilePath, NormalizeRelativePath(file.Path))))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var removed = 0;
+
+        foreach (var exactDirectory in patch.ExactDirectories)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var relativeDirectory = NormalizeRelativePath(exactDirectory);
+            var directory = ResolveSafeChild(profilePath, relativeDirectory);
+            if (!Directory.Exists(directory)) continue;
+
+            foreach (var existing in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).ToArray())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var fullPath = Path.GetFullPath(existing);
+                if (expectedPaths.Contains(fullPath)) continue;
+
+                var relative = Path.GetRelativePath(profilePath, fullPath).Replace('\\', '/');
+                Backup(fullPath, backupRoot, relative, touched);
+                File.Delete(fullPath);
+                removed++;
+                AppLog.Info($"Quarantined unexpected managed file: {relative}");
+            }
+        }
+
+        return removed;
+    }
+
+    private static void VerifyInstalledFiles(
+        string profilePath,
+        PatchManifest patch,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        for (var index = 0; index < patch.Files.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var file = patch.Files[index];
+            var relative = NormalizeRelativePath(file.Path);
+            if (IsProfileMetadata(relative) || IsUserOwnedPath(relative)) continue;
+
+            var installed = ResolveSafeChild(profilePath, relative);
+            if (!File.Exists(installed))
+            {
+                throw new InvalidDataException($"Installed file is missing after repair: {relative}");
+            }
+            var info = new FileInfo(installed);
+            if (file.Size >= 0 && info.Length != file.Size)
+            {
+                throw new InvalidDataException($"Installed file size mismatch after repair: {relative}");
+            }
+            var hash = ComputeSha256(installed);
+            if (!string.Equals(hash, file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new CryptographicException($"Installed file checksum mismatch after repair: {relative}");
+            }
+
+            if (index % 64 == 0 || index == patch.Files.Length - 1)
+            {
+                progress?.Report(new UpdateProgress(
+                    98 + (index + 1) * 1.5d / Math.Max(1, patch.Files.Length),
+                    "Validating installed client",
+                    relative));
+            }
+        }
+
+        var expectedPaths = patch.Files
+            .Select(file => Path.GetFullPath(ResolveSafeChild(profilePath, NormalizeRelativePath(file.Path))))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var exactDirectory in patch.ExactDirectories)
+        {
+            var directory = ResolveSafeChild(profilePath, NormalizeRelativePath(exactDirectory));
+            if (!Directory.Exists(directory)) continue;
+            var unexpected = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                .FirstOrDefault(path => !expectedPaths.Contains(Path.GetFullPath(path)));
+            if (unexpected is not null)
+            {
+                throw new InvalidDataException(
+                    $"Unexpected managed file remains after repair: {Path.GetRelativePath(profilePath, unexpected)}");
+            }
+        }
+    }
+
+    private static void ValidatePatchInventory(PatchManifest patch)
+    {
+        var files = patch.Files.Select(file => NormalizeRelativePath(file.Path)).ToArray();
+        var duplicateFile = files.GroupBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateFile is not null)
+        {
+            throw new InvalidDataException($"Patch contains a duplicate file path: {duplicateFile}");
+        }
+
+        var deletes = patch.Delete.Select(NormalizeRelativePath).ToArray();
+        var duplicateDelete = deletes.GroupBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateDelete is not null)
+        {
+            throw new InvalidDataException($"Patch contains a duplicate delete path: {duplicateDelete}");
+        }
+        var fileSet = files.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var conflict = deletes.FirstOrDefault(fileSet.Contains);
+        if (conflict is not null)
+        {
+            throw new InvalidDataException($"Patch both installs and deletes the same path: {conflict}");
+        }
+
+        var exactDirectories = patch.ExactDirectories.Select(NormalizeRelativePath).ToArray();
+        if (patch.SchemaVersion == 1 && exactDirectories.Length != 0)
+        {
+            throw new InvalidDataException("Schema version 1 cannot declare exact managed directories.");
+        }
+        if (patch.SchemaVersion >= 2 &&
+            !exactDirectories.Contains("mods", StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Schema version 2 must declare mods as an exact managed directory.");
+        }
+        var duplicateDirectory = exactDirectories.GroupBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateDirectory is not null)
+        {
+            throw new InvalidDataException($"Patch contains a duplicate exact directory: {duplicateDirectory}");
+        }
+        foreach (var directory in exactDirectories)
+        {
+            if (IsProfileMetadata(directory) || IsUserOwnedPath(directory))
+            {
+                throw new InvalidDataException($"Patch cannot strictly manage a user-owned path: {directory}");
+            }
+        }
+    }
+
     private static bool IsModJar(string relative)
     {
         var normalized = relative.Replace('\\', '/');
@@ -397,6 +554,20 @@ internal sealed class UpdateEngine
                     @"(?m)^\s*modId\s*=\s*[""'](?<id>[a-z0-9_.-]+)[""']",
                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
                 if (id.Success) modIds.Add(id.Groups["id"].Value);
+            }
+
+            foreach (Match inlineList in Regex.Matches(
+                         text,
+                         @"(?ms)^\s*mods\s*=\s*\[(?<body>.*?)\]\s*$",
+                         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                foreach (Match id in Regex.Matches(
+                             inlineList.Groups["body"].Value,
+                             @"\bmodId\s*=\s*[""'](?<id>[a-z0-9_.-]+)[""']",
+                             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                {
+                    modIds.Add(id.Groups["id"].Value);
+                }
             }
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
@@ -470,6 +641,12 @@ internal sealed class UpdateEngine
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 128, true);
         var hash = await SHA256.HashDataAsync(stream, cancellationToken);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string ComputeSha256(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 128);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
     private sealed record TouchedFile(string Destination, string Backup, bool Existed);

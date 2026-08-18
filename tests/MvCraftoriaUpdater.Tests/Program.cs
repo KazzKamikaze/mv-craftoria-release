@@ -34,6 +34,8 @@ Assert(VersionPolicy.Display("1.0.0-final") == "1.0.0", "legacy final suffix hid
 Assert(VersionPolicy.DisplayProfileName("MV Craftoria 1.0.0-final") == "MV Craftoria 1.0.0", "legacy profile suffix hidden");
 Assert(VersionPolicy.ProfileName("MV Craftoria", "1.1.0-final") == "MV Craftoria 1.1.0", "versioned profile name");
 Assert(VersionPolicy.IsSame("1.0.0", "1.0.0-final"), "legacy final version equivalence");
+Assert(VersionPolicy.IsNewerThanRunning("99.0.0"), "new updater version detection");
+Assert(!VersionPolicy.IsNewerThanRunning(VersionPolicy.RunningUpdaterVersion), "current updater is not newer");
 
 var root = Path.Combine(Path.GetTempPath(), "mv-updater-test-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -41,12 +43,77 @@ try
 {
     var config = new UpdaterConfiguration { ProductName = "MV Craftoria", Repository = "test/test" };
     var engine = new UpdateEngine(config);
+    var updaterBytes = Encoding.UTF8.GetBytes("verified updater payload");
+    var updaterPackage = new ReleasePackage
+    {
+        AssetName = "MV-Craftoria-Updater.exe",
+        Sha256 = Convert.ToHexString(SHA256.HashData(updaterBytes)).ToLowerInvariant(),
+        Size = updaterBytes.Length
+    };
+    var updaterRelease = new VerifiedRelease(
+        new ReleaseManifest
+        {
+            SchemaVersion = 2,
+            Product = "MV Craftoria",
+            Version = "1.1.0",
+            UpdaterVersion = "99.0.0",
+            UpdaterPackage = updaterPackage
+        },
+        new Uri("https://test.invalid/package.zip"),
+        null,
+        new Uri("https://test.invalid/updater.exe"),
+        new Uri("https://test.invalid/release"),
+        "test");
+    var updaterDownload = Path.Combine(root, "verified-updater.exe");
+    using (var client = new GitHubReleaseClient(config, new PackageHandler(updaterBytes)))
+    {
+        await client.DownloadUpdaterAsync(updaterRelease, updaterDownload, null, CancellationToken.None);
+    }
+    Assert(File.ReadAllBytes(updaterDownload).SequenceEqual(updaterBytes), "verified updater download");
+    var rejectedUpdaterRelease = updaterRelease with
+    {
+        Manifest = new ReleaseManifest
+        {
+            SchemaVersion = 2,
+            Product = "MV Craftoria",
+            Version = "1.1.0",
+            UpdaterVersion = "99.0.0",
+            UpdaterPackage = new ReleasePackage
+            {
+                AssetName = updaterPackage.AssetName,
+                Sha256 = new string('0', 64),
+                Size = updaterPackage.Size
+            }
+        }
+    };
+    var rejected = false;
+    try
+    {
+        using var client = new GitHubReleaseClient(config, new PackageHandler(updaterBytes));
+        await client.DownloadUpdaterAsync(
+            rejectedUpdaterRelease,
+            Path.Combine(root, "rejected-updater.exe"),
+            null,
+            CancellationToken.None);
+    }
+    catch (CryptographicException)
+    {
+        rejected = true;
+    }
+    Assert(rejected, "modified updater download rejected");
+    var replacementSource = Path.Combine(root, "replacement-source.exe");
+    var replacementTarget = Path.Combine(root, "replacement-target.exe");
+    File.WriteAllBytes(replacementSource, updaterBytes);
+    File.WriteAllText(replacementTarget, "old executable");
+    SelfUpdateService.ReplaceExecutable(replacementSource, replacementTarget);
+    Assert(File.ReadAllBytes(replacementTarget).SequenceEqual(updaterBytes), "atomic updater executable replacement");
+    Assert(!Directory.EnumerateFiles(root, ".replacement-target.exe.*.new").Any(), "self-update staging file cleanup");
     var targetPath = Path.Combine(root, "Instances", "MV Craftoria 1.0.0");
     var sentinelPath = Path.Combine(root, "Instances", "MV Craftoria", "sentinel.txt");
     Directory.CreateDirectory(Path.GetDirectoryName(sentinelPath)!);
     File.WriteAllText(sentinelPath, "untouched");
 
-    var first = CreatePackage(root, "1.0.0", ["NOT_INSTALLED"]);
+    var first = CreatePackage(root, "1.0.0", ["NOT_INSTALLED"], schemaVersion: 1);
     using (var client = new GitHubReleaseClient(config, new PackageHandler(first.Bytes)))
     {
         var target = new CurseForgeProfile("MV Craftoria 1.0.0", targetPath, "NOT_INSTALLED", "1.21.1");
@@ -135,7 +202,8 @@ try
         "respawned CurseForge agent does not abort maintenance");
     Assert(CurseForgeProcessService.IsBlockingMaintenanceProcessName("CurseForge"),
         "CurseForge desktop process blocks maintenance");
-    Assert(!CurseForgeProcessService.IsMaintenanceProcessName("Overwolf"), "Overwolf process exclusion");
+    Assert(CurseForgeProcessService.IsMaintenanceProcessName("Overwolf"), "Overwolf closes during maintenance");
+    Assert(CurseForgeProcessService.IsBlockingMaintenanceProcessName("Overwolf"), "Overwolf blocks file maintenance");
     Assert(CurseForgeProcessService.IsHostedCurseForgeWindow("Overwolf", "CurseForge"), "hosted CurseForge window detection");
     Assert(!CurseForgeProcessService.IsHostedCurseForgeWindow("chrome", "CurseForge download page"),
         "browser windows are never treated as hosted CurseForge");
@@ -172,11 +240,13 @@ try
     var conflictingJei = Path.Combine(modsPath, "jei-legacy.jar");
     var conflictingTmrv = Path.Combine(modsPath, "toomanyrecipeviewers-legacy.jar");
     var unrelatedPersonalMod = Path.Combine(modsPath, "personal-extra.jar");
+    var metadataLessUpdatedLibrary = Path.Combine(modsPath, "kotlinforforge-updated.jar");
     var removedChatToggle = Path.Combine(modsPath, "chattoggle-legacy.jar");
     var removedChatToggleConfig = Path.Combine(targetPath, "config", "chattoggle.json");
     CreateFakeModJar(conflictingJei, "jei");
     CreateFakeModJar(conflictingTmrv, "toomanyrecipeviewers", "jei");
     CreateFakeModJar(unrelatedPersonalMod, "personal_extra");
+    CreateMetadataLessJar(metadataLessUpdatedLibrary);
     CreateFakeModJar(removedChatToggle, "chattoggle");
     File.WriteAllText(removedChatToggleConfig, "{\"on\":true}");
 
@@ -185,10 +255,11 @@ try
         "1.1.0",
         ["1.0.0"],
         ["mods/chattoggle-legacy.jar", "config/chattoggle.json"]);
+    string updateBackup;
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
     {
         var target = new CurseForgeProfile("MV Craftoria 1.0.0", targetPath, "1.0.0", "1.21.1");
-        await engine.InstallAsync(
+        updateBackup = await engine.InstallAsync(
             target,
             second.Release,
             client,
@@ -217,9 +288,20 @@ try
         "renamed previous managed mod removed");
     Assert(File.Exists(Path.Combine(modsPath, "toomanyrecipeviewers-1.1.0.jar")),
         "current managed mod installed");
-    Assert(File.Exists(unrelatedPersonalMod), "unrelated personal mod preserved");
+    Assert(!File.Exists(unrelatedPersonalMod), "unexpected personal mod quarantined from exact inventory");
+    Assert(!File.Exists(metadataLessUpdatedLibrary), "metadata-less updated library quarantined from exact inventory");
+    Assert(File.Exists(Path.Combine(updateBackup, "mods", "personal-extra.jar")),
+        "unexpected personal mod retained in rollback backup");
+    Assert(File.Exists(Path.Combine(updateBackup, "mods", "kotlinforforge-updated.jar")),
+        "metadata-less updated library retained in rollback backup");
     Assert(!File.Exists(removedChatToggle), "explicitly removed mod deleted");
     Assert(!File.Exists(removedChatToggleConfig), "explicitly removed mod config deleted");
+
+    var expectedTmrv = Path.Combine(modsPath, "toomanyrecipeviewers-1.1.0.jar");
+    var expectedTmrvHash = Hash(expectedTmrv);
+    File.WriteAllText(expectedTmrv, "corrupted by manual update");
+    var updateAllDuplicate = Path.Combine(modsPath, "toomanyrecipeviewers-9.9.9.jar");
+    CreateFakeModJar(updateAllDuplicate, "toomanyrecipeviewers", "jei");
 
     var instanceDirectoriesBeforeRepair = Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().ToArray();
     using (var client = new GitHubReleaseClient(config, new PackageHandler(second.Bytes)))
@@ -244,6 +326,8 @@ try
     Assert(Directory.GetDirectories(Path.GetDirectoryName(targetPath)!).Order().SequenceEqual(instanceDirectoriesBeforeRepair),
         "same-version repair does not create another client directory");
     Assert(File.ReadAllText(Path.Combine(targetPath, "config", "version.txt")) == "1.1.0", "same-version repair reapplies managed files");
+    Assert(Hash(expectedTmrv) == expectedTmrvHash, "same-version repair restores expected mod checksum");
+    Assert(!File.Exists(updateAllDuplicate), "same-version repair removes Update All duplicate");
     Assert(File.ReadAllBytes(distantHorizonsConfig).SequenceEqual(distantHorizonsBeforeUpdate),
         "same-version repair preserves Distant Horizons config byte-for-byte");
     Console.WriteLine("MV_UPDATER_PROFILE_AND_VERSION_TEST_PASSED");
@@ -257,7 +341,8 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(
     string root,
     string version,
     string[] supportedFrom,
-    string[]? delete = null)
+    string[]? delete = null,
+    int schemaVersion = 2)
 {
     var build = Path.Combine(root, "build-" + Guid.NewGuid().ToString("N"));
     var payload = Path.Combine(build, "payload");
@@ -291,12 +376,13 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(
     }).ToArray();
     var patch = new PatchManifest
     {
-        SchemaVersion = 1,
+        SchemaVersion = schemaVersion,
         Product = "MV Craftoria",
         TargetVersion = version,
         SupportedFrom = supportedFrom,
         Files = files,
-        Delete = delete ?? []
+        Delete = delete ?? [],
+        ExactDirectories = schemaVersion >= 2 ? ["mods"] : []
     };
     File.WriteAllText(Path.Combine(build, "mv-patch.json"), JsonSerializer.Serialize(patch, JsonDefaults.Options), new UTF8Encoding(false));
     var zipPath = Path.Combine(root, $"MV-Craftoria-{version}.zip");
@@ -319,6 +405,7 @@ static (byte[] Bytes, VerifiedRelease Release) CreatePackage(
         manifest,
         new Uri("https://test.invalid/package.zip"),
         null,
+        null,
         new Uri("https://test.invalid/release"),
         "test"));
 }
@@ -337,6 +424,16 @@ static void CreateFakeModJar(string path, params string[] modIds)
         writer.WriteLine($"modId = \"{modId}\"");
         writer.WriteLine("version = \"1.0.0\"");
     }
+}
+
+static void CreateMetadataLessJar(string path)
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+    using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+    var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
+    using var writer = new StreamWriter(manifest.Open(), new UTF8Encoding(false));
+    writer.WriteLine("Manifest-Version: 1.0");
+    writer.WriteLine("FMLModType: LIBRARY");
 }
 
 static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();

@@ -7,9 +7,23 @@ public partial class App : Application
 {
     private Mutex? instanceMutex;
     private bool ownsInstanceMutex;
+    internal bool SelfUpdateCompleted { get; private set; }
+    internal bool SelfUpdateSucceeded { get; private set; }
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (SelfUpdateService.TryRunHelper(e.Args, out var helperExitCode))
+        {
+            Shutdown(helperExitCode);
+            return;
+        }
+
+        var cleanupSession = SelfUpdateService.ReadCleanupSession(
+            e.Args,
+            out var helperProcessId,
+            out var updateSucceeded);
+        SelfUpdateCompleted = cleanupSession is not null;
+        SelfUpdateSucceeded = updateSucceeded;
         instanceMutex = new Mutex(true, @"Local\MV.Craftoria.Updater.SingleInstance", out ownsInstanceMutex);
         if (!ownsInstanceMutex)
         {
@@ -21,8 +35,12 @@ public partial class App : Application
             Shutdown();
             return;
         }
-        WorkDirectoryCleaner.CleanupAbandonedSessions();
+        WorkDirectoryCleaner.CleanupAbandonedSessions(cleanupSession);
         base.OnStartup(e);
+        if (cleanupSession is not null)
+        {
+            SelfUpdateService.ScheduleCleanup(cleanupSession, helperProcessId);
+        }
         DispatcherUnhandledException += (_, args) =>
         {
             AppLog.Error("Unhandled UI exception", args.Exception);

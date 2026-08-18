@@ -16,20 +16,24 @@ Windows installer and updater for the private MV Craftoria CurseForge profile.
 - In-place updates advance the displayed profile name to the installed version while preserving the profile GUID, path, group, and play-time metadata.
 - Failed or cancelled operations remove downloads, staging data, failed backups, and incomplete new profiles.
 - Abandoned updater work directories are cleaned on the next launch.
+- Signed releases can advertise a newer updater. The app verifies its size and SHA-256 from the signed manifest,
+  replaces itself through a temporary helper, reopens automatically, and removes the helper files.
+- Client installation is disabled when a release requires a newer updater.
+- CurseForge and Overwolf are closed during file maintenance so neither can rewrite or lock the selected profile.
 - Player saves, controls, maps, screenshots, shader selection, logs, caches, and Distant Horizons data are not managed.
 
 ## Release assets
 
 Every GitHub release must contain:
 
-- `MV-Craftoria-VERSION.zip`
 - `MV-Craftoria-VERSION-MANUAL-INSTALL-CurseForge.zip` for manual CurseForge imports
 - `MV-Craftoria-VERSION-UPDATER-DATA.zip` for the updater only; users must not import it
 - `mv-release.json`
 - `mv-release.sig`
 - `MV-Craftoria-Updater.exe`
 
-Build them with `tools/build-release.ps1`. The private signing key must never be committed or uploaded.
+Build the updater first, then pass it to `tools/build-release.ps1 -UpdaterPath`. Its version, size, and checksum
+are added to the signed release manifest. The private signing key must never be committed or uploaded.
 
 Publish a prepared version directory with `tools/publish-release.ps1`. It uses the existing Git Credential
 Manager session and never writes the GitHub credential to disk or command output.

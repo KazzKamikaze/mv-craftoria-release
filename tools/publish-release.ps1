@@ -35,6 +35,21 @@ foreach ($name in $required) {
     }
 }
 
+$signedManifest = Get-Content -LiteralPath (Join-Path $assets 'mv-release.json') -Raw | ConvertFrom-Json
+if ($null -eq $signedManifest.updaterPackage -or [string]::IsNullOrWhiteSpace($signedManifest.updaterVersion)) {
+    throw 'The signed release manifest does not contain updater self-update metadata. Rebuild it with build-release.ps1 -UpdaterPath.'
+}
+$updaterAssetPath = Join-Path $assets $signedManifest.updaterPackage.assetName
+if (-not (Test-Path -LiteralPath $updaterAssetPath -PathType Leaf)) {
+    throw "The updater named by the signed manifest is missing: $($signedManifest.updaterPackage.assetName)"
+}
+$updaterAssetInfo = Get-Item -LiteralPath $updaterAssetPath
+$updaterAssetHash = (Get-FileHash -LiteralPath $updaterAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($updaterAssetInfo.Length -ne [long]$signedManifest.updaterPackage.size -or
+    $updaterAssetHash -ne [string]$signedManifest.updaterPackage.sha256) {
+    throw 'The updater executable does not match the size and SHA-256 in the signed release manifest.'
+}
+
 $credentialInput = "protocol=https`nhost=github.com`n`n"
 $credentialLines = @($credentialInput | git credential fill)
 $username = ($credentialLines | Where-Object { $_ -like 'username=*' } | Select-Object -First 1) -replace '^username=', ''

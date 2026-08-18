@@ -6,18 +6,43 @@ internal static class VersionPolicy
 {
     private const string LegacyFinalSuffix = "-final";
 
+    internal static string RunningUpdaterVersion =>
+        Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+
     internal static void EnsureUpdaterVersionSupported(string minimumVersion)
     {
-        var runningText = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
-        if (!TryParse(minimumVersion, out var minimum) || !TryParse(runningText, out var running))
-        {
-            throw new InvalidDataException("The release contains an invalid updater version requirement.");
-        }
-        if (running < minimum)
+        if (!IsRunningUpdaterSupported(minimumVersion))
         {
             throw new InvalidOperationException(
                 $"This release requires MV Craftoria Updater {minimumVersion} or newer.");
         }
+    }
+
+    internal static bool IsRunningUpdaterSupported(string minimumVersion)
+    {
+        if (!TryParse(minimumVersion, out var minimum) || !TryParse(RunningUpdaterVersion, out var running))
+        {
+            throw new InvalidDataException("The release contains an invalid updater version requirement.");
+        }
+        return running >= minimum;
+    }
+
+    internal static bool IsNewerThanRunning(string candidateVersion)
+    {
+        if (!TryParse(candidateVersion, out var candidate) || !TryParse(RunningUpdaterVersion, out var running))
+        {
+            throw new InvalidDataException("The release contains an invalid updater version.");
+        }
+        return candidate > running;
+    }
+
+    internal static int Compare(string left, string right)
+    {
+        if (!TryParse(left, out var leftVersion) || !TryParse(right, out var rightVersion))
+        {
+            throw new InvalidDataException("A release contains an invalid version.");
+        }
+        return leftVersion.CompareTo(rightVersion);
     }
 
     internal static bool IsSame(string left, string right) =>
